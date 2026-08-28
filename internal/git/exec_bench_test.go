@@ -1,0 +1,184 @@
+package git_test
+
+import (
+	"context"
+	"os/exec"
+	"testing"
+	"time"
+
+	"github.com/f3xp/bubblegit/internal/git"
+	"github.com/f3xp/bubblegit/internal/gittest"
+)
+
+// bigRepoCommits is the benchmark fixture size. The point of this harness is
+// to answer "when does spawn-per-call stop being fast enough?" with a
+// measurement instead of a guess.
+const bigRepoCommits = 100000
+
+// logPageSize is how many commits the log pane loads at once. Reads MUST stay
+// bounded — "load all commits then render" is the failure mode this guards.
+const logPageSize = 100
+
+// workBudget caps the git work a single read may do, measured ABOVE the
+// process-spawn floor.
+//
+// It is deliberately not an absolute wall-clock budget. Spawn cost is a
+// property of the machine, not of our code: on a clean box fork/exec is ~1ms,
+// but on a laptop with EDR hooks (CrowdStrike, ManageEngine et al filtering
+// every execve) it is ~14ms, which alone exceeds a 60fps frame. Measuring
+// above the floor keeps this guard portable and keeps it pointed at the thing
+// we can actually fix.
+const workBudget = 8 * time.Millisecond
+
+// ops are the read paths on the hot loop, in the exact form the git layer
+// uses: plumbing commands with -z, never porcelain.
+//
+// Pagination is cursor-based (start the walk at a SHA), never offset-based.
+// `--skip=N` is O(N) — git walks and discards every skipped commit — so page
+// 500 of the log costs 100x page 1. See TestPaginationStrategy.
+var ops = []struct {
+	name       string
+	args       []string
+	mayBeEmpty bool // a clean repo legitimately produces no output
+}{
+	{name: "Status", args: []string{"status", "--porcelain=v2", "-z", "--untracked-files=all"}, mayBeEmpty: true},
+	{name: "LogFirstPage", args: []string{"log", "-z", "--no-color", "-n", "100",
+		"--format=%H%x00%h%x00%an%x00%at%x00%P%x00%s"}},
+	// -m --first-parent is load-bearing, not decoration: plain `diff-tree -p`
+	// emits NOTHING for a merge commit, so the detail pane would render blank
+	// on every merge. --cc is also empty for a clean merge (it only shows
+	// hunks differing from both parents). See TestCommitDetailShowsMerges.
+	{name: "CommitDetail", args: []string{"diff-tree", "-p", "--no-color", "-r", "-m", "--first-parent", "HEAD"}},
+	{name: "Refs", args: []string{"for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream:short)"}},
+}
+
+// bestOf returns the fastest of n runs after a warmup.
+//
+// The warmup is not optional: the first status against a freshly built repo
+// pays a cold index refresh and a cold page cache, and costs ~10x the steady
+// state. Timing that measures the fixture builder, not our git usage.
+func bestOf(n int, f func()) time.Duration {
+	f() // warmup, discarded
+	b := time.Duration(1<<63 - 1)
+	for i := 0; i < n; i++ {
+		start := time.Now()
+		f()
+		if d := time.Since(start); d < b {
+			b = d
+		}
+	}
+	return b
+}
+
+// spawnFloor is the cost of creating any process at all on this machine,
+// measured with a binary that does nothing. Everything else is reported
+// relative to it.
+func spawnFloor() time.Duration {
+	return bestOf(10, func() { _ = exec.Command("/usr/bin/true").Run() })
+}
+
+func benchRepo(tb testing.TB) *git.Runner {
+	tb.Helper()
+	if testing.Short() {
+		tb.Skip("skipping big-fixture benchmark in -short mode")
+	}
+	return git.New(gittest.Big(tb, bigRepoCommits))
+}
+
+func BenchmarkOps(b *testing.B) {
+	r := benchRepo(b)
+	ctx := context.Background()
+	for _, op := range ops {
+		b.Run(op.name, func(b *testing.B) {
+			for b.Loop() {
+				if _, err := r.Run(ctx, op.args...); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestWorkBudget fails when a hot read starts doing too much git work.
+// Timing is the minimum of several runs, so scheduler noise and a cold page
+// cache cannot turn it into a flake — only a genuine slowdown trips it.
+func TestWorkBudget(t *testing.T) {
+	r := benchRepo(t)
+	ctx := context.Background()
+
+	floor := spawnFloor()
+	t.Logf("process spawn floor on this machine: %v (all figures below are above this)",
+		floor.Round(time.Microsecond))
+
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			total := bestOf(9, func() {
+				out, err := r.Run(ctx, op.args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(out) == 0 && !op.mayBeEmpty {
+					t.Fatalf("empty output from git %v", op.args)
+				}
+			})
+			work := total - floor
+			if work < 0 {
+				work = 0
+			}
+			t.Logf("%s: %v wall, %v work (budget %v)",
+				op.name, total.Round(time.Microsecond), work.Round(time.Microsecond), workBudget)
+			if work > workBudget {
+				t.Errorf("%s does %v of git work, over the %v budget — this read needs "+
+					"bounding, caching, or a long-lived git process", op.name, work, workBudget)
+			}
+		})
+	}
+}
+
+// TestPaginationStrategy pins the reason the log pane must page by cursor.
+//
+// `--skip=N` makes git walk and throw away N commits, so cost grows with how
+// far the user has scrolled. Passing the last SHA of the previous page instead
+// makes every page cost the same. This is a property of git, not of the
+// machine, so the assertion is a ratio rather than a duration.
+func TestPaginationStrategy(t *testing.T) {
+	r := benchRepo(t)
+	ctx := context.Background()
+
+	const deep = bigRepoCommits / 2
+
+	out, err := r.Run(ctx, "log", "-n", "1", "--skip="+itoa(deep), "--format=%H")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := string(out[:40])
+
+	offset := bestOf(3, func() {
+		r.Run(ctx, "log", "-n", itoa(logPageSize), "--skip="+itoa(deep), "--format=%H")
+	})
+	byCursor := bestOf(3, func() {
+		r.Run(ctx, "log", "-n", itoa(logPageSize), "--format=%H", cursor)
+	})
+
+	t.Logf("page at offset %d: --skip=%v vs cursor=%v",
+		deep, offset.Round(time.Microsecond), byCursor.Round(time.Microsecond))
+
+	if byCursor >= offset {
+		t.Errorf("cursor paging (%v) is not faster than offset paging (%v); "+
+			"if this ever holds, revisit the log pane design", byCursor, offset)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}

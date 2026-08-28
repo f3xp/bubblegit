@@ -1,0 +1,7 @@
+/bubblegit
+/dist/
+
+# Claude Code tooling artifacts — session state and generated run logs.
+# Project-level .claude config (settings, skills) is intentionally NOT ignored.
+/.claude/debug-state/
+/docs/debug-runs/
