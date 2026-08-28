@@ -23,6 +23,10 @@ type Map struct {
 	Commit []string
 	Branch []string
 
+	// ToggleStaged switches the diff pane between the worktree change and
+	// the staged change.
+	ToggleStaged []string
+
 	Help []string
 	Quit []string
 }
@@ -44,6 +48,8 @@ func Default() Map {
 		Stage:  []string{" "},
 		Commit: []string{"c"},
 		Branch: []string{"b"},
+
+		ToggleStaged: []string{"t"},
 
 		Help: []string{"?"},
 		Quit: []string{"q", "ctrl+c"},

@@ -115,9 +115,12 @@ func (d *Diff) View() string {
 	return d.vp.View()
 }
 
-// gutterWidth is the width of the line-number column, wide enough for a
-// six-figure file without reflowing.
-const gutterWidth = 5
+// numWidth is the width of each line-number column, wide enough for a
+// five-figure file without reflowing.
+const numWidth = 4
+
+// gutterWidth covers both columns and the space between them.
+const gutterWidth = numWidth*2 + 1
 
 func renderLines(fd git.FileDiff) []string {
 	hl := highlight.For(fd.Path)
@@ -142,23 +145,28 @@ func renderLine(hl *highlight.Highlighter, l git.Line) string {
 	// the line's tokens.
 	body := hl.Line(l.Text)
 
-	var gutter, prefix string
-	var style = theme.Context
+	prefix, style := " ", theme.Context
 	switch l.Kind {
 	case git.LineAdd:
-		gutter, prefix, style = num(l.NewNum), "+", theme.Add
+		prefix, style = "+", theme.Add
 	case git.LineDel:
-		gutter, prefix, style = num(l.OldNum), "-", theme.Del
-	default:
-		gutter, prefix = num(l.NewNum), " "
+		prefix, style = "-", theme.Del
 	}
+
+	// Two columns, old then new. A single column would have to show the old
+	// number for a deletion and the new number for everything else, so a
+	// deletion and the addition replacing it both render as "3" — two rows
+	// claiming the same line number, in different files. That ambiguity is
+	// cosmetic now and dangerous in M2, where line-level staging keys off
+	// exactly this column.
+	gutter := num(l.OldNum) + " " + num(l.NewNum)
 
 	return theme.Dim.Render(gutter) + style.Render(prefix) + body
 }
 
 func num(n int) string {
 	if n == 0 {
-		return strings.Repeat(" ", gutterWidth)
+		return strings.Repeat(" ", numWidth)
 	}
-	return fmt.Sprintf("%*d", gutterWidth, n)
+	return fmt.Sprintf("%*d", numWidth, n)
 }

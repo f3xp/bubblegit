@@ -78,7 +78,14 @@ type Model struct {
 	// its content, so a pane whose body is short ("loading…") would otherwise
 	// draw a box narrower than its column.
 	filesW, diffW, bodyH int
-	ready                bool
+	// showStaged makes the diff pane show the index-vs-HEAD change instead of
+	// the worktree-vs-index one. A partially staged file has both, and
+	// without a toggle half its changes are unreachable.
+	showStaged bool
+
+	// narrow drops to a single pane when there is not room for two.
+	narrow bool
+	ready  bool
 }
 
 func New(root string) Model {
@@ -127,10 +134,11 @@ func (m *Model) loadDiff() tea.Cmd {
 	gen := m.diffGen
 	repo := m.repo
 
-	// A file may be changed in the index, in the worktree, or both. Showing
-	// the worktree change is the more useful default: it is what the user is
-	// about to stage.
-	staged := sel.IsStaged() && !sel.IsUnstaged()
+	// A file may be changed in the index, in the worktree, or both. The
+	// worktree change is the more useful default — it is what the user is
+	// about to stage — but a file with no worktree change has only a staged
+	// one to show, and the toggle reaches the staged side of the rest.
+	staged := m.showStaged || (sel.IsStaged() && !sel.IsUnstaged())
 	untracked := sel.IsUntracked()
 
 	m.diff.SetLoading(sel.Path)
@@ -184,6 +192,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case keys.Matches(m.keys.Quit, k):
 		return m, tea.Quit
+
+	case keys.Matches(m.keys.ToggleStaged, k):
+		m.showStaged = !m.showStaged
+		return m, m.loadDiff()
 
 	case keys.Matches(m.keys.NextPane, k), keys.Matches(m.keys.PrevPane, k):
 		if m.focus == focusFiles {
@@ -247,34 +259,76 @@ func (m Model) handleDiffKey(k string) (tea.Model, tea.Cmd) {
 }
 
 // minPaneWidth keeps both panes legible rather than letting one collapse.
-const minPaneWidth = 20
+const minPaneWidth = 24
 
-// layout splits the terminal between the two panes. Border and title take
-// three rows and two columns per pane.
+// Pane chrome: a border row above and below, plus a title row.
+const (
+	chromeH = 3
+	chromeW = 2
+	headerH = 1
+)
+
+// layout splits the terminal between the panes.
+//
+// Every clamp here has to agree with framed(), or the rendered frame comes
+// out larger than the terminal and the display tears on resize. The rule is
+// that filesW+diffW is exactly m.width, and header plus pane is exactly
+// m.height.
 func (m *Model) layout() {
-	const (
-		chromeH = 3 // top border, title, bottom border
-		chromeW = 2 // left and right border
-		headerH = 1 // the branch line above both panes
-	)
-
 	m.bodyH = m.height - headerH
-	if m.bodyH < chromeH+1 {
-		m.bodyH = chromeH + 1
+	if m.bodyH < 1 {
+		m.bodyH = 1
 	}
 
-	m.filesW = int(float64(m.width) * filesPaneWidth)
-	if m.filesW < minPaneWidth {
-		m.filesW = minPaneWidth
-	}
-	m.diffW = m.width - m.filesW
-	if m.diffW < minPaneWidth {
-		m.diffW = minPaneWidth
+	// Below two minimum-width panes, show one pane at full width rather than
+	// two unreadable slivers.
+	m.narrow = m.width < 2*minPaneWidth
+	if m.narrow {
+		m.filesW, m.diffW = m.width, m.width
+	} else {
+		m.filesW = int(float64(m.width) * filesPaneWidth)
+		if m.filesW < minPaneWidth {
+			m.filesW = minPaneWidth
+		}
+		m.diffW = m.width - m.filesW
+		if m.diffW < minPaneWidth {
+			m.diffW = minPaneWidth
+			m.filesW = m.width - m.diffW
+		}
 	}
 
-	m.files.SetSize(m.filesW-chromeW, m.bodyH-chromeH)
-	m.diff.SetSize(m.diffW-chromeW, m.bodyH-chromeH)
+	m.files.SetSize(m.contentW(m.filesW), m.contentH())
+	m.diff.SetSize(m.contentW(m.diffW), m.contentH())
 }
+
+// contentW is the usable width inside a pane's border.
+func (m Model) contentW(paneW int) int {
+	w := paneW - chromeW
+	if !m.bordered() {
+		w = paneW
+	}
+	if w < 1 {
+		return 1
+	}
+	return w
+}
+
+// contentH is the usable height inside a pane's border.
+func (m Model) contentH() int {
+	h := m.bodyH - chromeH
+	if !m.bordered() {
+		h = m.bodyH
+	}
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// bordered reports whether there is room to draw pane chrome at all. On a
+// very short terminal the border would cost more rows than the content it
+// frames, so it is dropped entirely.
+func (m Model) bordered() bool { return m.bodyH >= chromeH+1 }
 
 func (m Model) View() tea.View {
 	v := tea.NewView(m.body())
@@ -303,13 +357,27 @@ func (m Model) body() string {
 		filesTitle += " (" + strconv.Itoa(n) + ")"
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		m.header(),
-		lipgloss.JoinHorizontal(lipgloss.Top,
+	var panes string
+	if m.narrow {
+		// One pane at a time; tab swaps which one is visible.
+		if m.focus == focusDiff {
+			panes = m.framed(diffTitle(m.diff.Title(), m.showStaged), m.diff.View(), m.diffW, true)
+		} else {
+			panes = m.framed(filesTitle, m.files.View(), m.filesW, true)
+		}
+	} else {
+		panes = lipgloss.JoinHorizontal(lipgloss.Top,
 			m.framed(filesTitle, m.files.View(), m.filesW, m.focus == focusFiles),
-			m.framed(diffTitle(m.diff.Title()), m.diff.View(), m.diffW, m.focus == focusDiff),
-		),
+			m.framed(diffTitle(m.diff.Title(), m.showStaged), m.diff.View(), m.diffW, m.focus == focusDiff),
+		)
+	}
+
+	frame := lipgloss.JoinVertical(lipgloss.Left,
+		ansi.Truncate(m.header(), m.width, ""),
+		panes,
 	)
+	// Last line of defence: never hand the terminal more rows than it has.
+	return lipgloss.NewStyle().MaxHeight(m.height).MaxWidth(m.width).Render(frame)
 }
 
 func (m Model) header() string {
@@ -332,32 +400,32 @@ func (m Model) header() string {
 // "loading…" would draw a box a few cells wide next to a full-height
 // neighbour.
 func (m Model) framed(title, body string, width int, focused bool) string {
-	inner := width - 2 // left and right border
-	if inner < 1 {
-		inner = 1
-	}
-	height := m.bodyH - 3 // top border, title row, bottom border
-	if height < 1 {
-		height = 1
+	inner := m.contentW(width)
+	height := m.contentH()
+
+	sized := lipgloss.NewStyle().Width(inner).Height(height).MaxHeight(height).Render(body)
+	if !m.bordered() {
+		return sized
 	}
 
-	head := theme.Title.Render(ansi.Truncate(title, inner, "…"))
+	style := theme.Title
 	if !focused {
-		head = theme.TitleDim.Render(ansi.Truncate(title, inner, "…"))
+		style = theme.TitleDim
 	}
+	head := lipgloss.NewStyle().Width(inner).Render(style.Render(ansi.Truncate(title, inner, "…")))
 
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Width(inner).Render(head),
-		lipgloss.NewStyle().Width(inner).Height(height).Render(body),
-	)
-	return theme.Border(focused).Render(content)
+	return theme.Border(focused).Render(lipgloss.JoinVertical(lipgloss.Left, head, sized))
 }
 
-func diffTitle(path string) string {
+func diffTitle(path string, staged bool) string {
 	if path == "" {
 		return "Diff"
 	}
-	return "Diff — " + path
+	side := "worktree"
+	if staged {
+		side = "staged"
+	}
+	return "Diff — " + path + " (" + side + ")"
 }
 
 func short(sha string) string {

@@ -31,7 +31,9 @@ go run ./cmd/bubblegit    # from anywhere inside a git repository
 ```
 
 `j`/`k` move, `g`/`G` jump to the ends, `ctrl+d`/`ctrl+u` half-page, `tab` switches pane,
-`q` or `ctrl+c` quits.
+`t` toggles the diff between the worktree and staged sides, `q` or `ctrl+c` quits.
+
+Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
 
 ## Development
 

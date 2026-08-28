@@ -2,10 +2,12 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/teatest/v2"
 
 	"github.com/f3xp/bubblegit/internal/git"
@@ -160,5 +162,88 @@ func TestErrorIsShown(t *testing.T) {
 	h.send(diffMsg{gen: h.m.diffGen, err: err})
 	if body := h.m.Body(); !strings.Contains(body, "git error") {
 		t.Errorf("the error is not visible in the frame:\n%s", body)
+	}
+}
+
+// TestLayoutFitsTerminal guards against the frame being larger than the
+// terminal it is drawn into.
+//
+// The clamps in layout() and framed() have to agree; when they drifted apart,
+// a 20x3 terminal produced a 40x5 frame — twice the width and taller than the
+// screen — which tears the display on resize.
+func TestLayoutFitsTerminal(t *testing.T) {
+	sizes := []struct{ w, h int }{
+		{80, 24}, // ordinary
+		{48, 10}, // exactly two minimum-width panes
+		{47, 10}, // one column short: must drop to a single pane
+		{40, 6},
+		{20, 3}, // too short for pane chrome at all
+		{10, 2},
+		{1, 1}, // degenerate
+	}
+	for _, sz := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
+			m := New(t.TempDir())
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
+			m = updated.(Model)
+			m.files.SetFiles([]git.FileStatus{
+				{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "a-fairly-long-file-name.txt"},
+				{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "ünïcødé-ファイル.txt"},
+			})
+
+			lines := strings.Split(m.Body(), "\n")
+			if len(lines) > sz.h {
+				t.Errorf("frame is %d rows for a %d-row terminal", len(lines), sz.h)
+			}
+			for i, l := range lines {
+				if w := ansi.StringWidth(l); w > sz.w {
+					t.Errorf("row %d is %d cells wide for a %d-column terminal: %q", i, w, sz.w, l)
+				}
+			}
+		})
+	}
+}
+
+// TestWidePathDoesNotOverflow checks a row containing double-width characters
+// is truncated on display width, not byte length.
+func TestWidePathDoesNotOverflow(t *testing.T) {
+	m := New(t.TempDir())
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 30, Height: 12})
+	m = updated.(Model)
+	m.files.SetFiles([]git.FileStatus{
+		{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "ünïcødé-ファイル-ファイル-ファイル.txt"},
+	})
+	for i, l := range strings.Split(m.Body(), "\n") {
+		if w := ansi.StringWidth(l); w > 30 {
+			t.Errorf("row %d is %d cells wide, want at most 30: %q", i, w, l)
+		}
+	}
+}
+
+// TestToggleStagedSwitchesSide checks the staged half of a partially staged
+// file is reachable. staged.txt is added to the index and not modified after,
+// so its worktree diff is empty and only the staged side has content.
+func TestToggleStagedSwitchesSide(t *testing.T) {
+	h := newHarness(t)
+	for h.m.SelectedPath() != "staged.txt" {
+		before := h.m.SelectedPath()
+		h.press("j")
+		if h.m.SelectedPath() == before {
+			t.Fatal("staged.txt is not in the file list")
+		}
+	}
+
+	h.resolveDiff()
+	if body := h.m.Body(); !strings.Contains(body, "staged") {
+		t.Fatalf("expected the staged side to render:\n%s", body)
+	}
+
+	h.press("t")
+	if !h.m.showStaged {
+		t.Error("t did not toggle the staged view")
+	}
+	h.resolveDiff()
+	if body := h.m.Body(); !strings.Contains(body, "(staged)") {
+		t.Errorf("the title does not say which side is shown:\n%s", body)
 	}
 }
