@@ -3,8 +3,8 @@
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), aiming to be
 fast on large repositories and more interactive than the alternatives.
 
-> **Status: early.** Milestone 0 is complete — the git layer, fixtures, benchmark harness and
-> an app skeleton. There is no usable UI yet. See the milestones below.
+> **Status: early.** Milestone 1 is complete — a two-pane browser showing the working tree and
+> syntax-highlighted diffs. It is read-only: nothing stages, commits or writes yet.
 
 ## Why shell out to `git`
 
@@ -30,7 +30,8 @@ The cost is a process spawn per read, so the read paths use plumbing commands wi
 go run ./cmd/bubblegit    # from anywhere inside a git repository
 ```
 
-Press `q` or `ctrl+c` to quit.
+`j`/`k` move, `g`/`G` jump to the ends, `ctrl+d`/`ctrl+u` half-page, `tab` switches pane,
+`q` or `ctrl+c` quits.
 
 ## Development
 
@@ -54,7 +55,7 @@ SHAs are byte-identical across runs and machines. Golden files depend on that.
 | | |
 | --- | --- |
 | M0 | ✅ git layer, fixtures, benchmark harness, app skeleton |
-| M1 | Files pane and syntax-highlighted diff, read-only |
+| M1 | ✅ files pane and syntax-highlighted diff, read-only |
 | M2 | Staging by hunk and by line |
 | M3 | Commit and amend |
 | M4 | Log pane, commit detail, commit graph |

@@ -12,20 +12,32 @@ import (
 	"github.com/f3xp/bubblegit/internal/ui"
 )
 
-// TestInitialRender is the end-to-end proof that the chosen test strategy
-// works: drive the real program with teatest, assert the rendered frame
-// against a golden file. Update goldens with `go test ./... -update`.
-func TestInitialRender(t *testing.T) {
-	repo := gittest.Small(t)
-	tm := teatest.NewTestModel(t, ui.New(repo), teatest.WithInitialTermSize(80, 24))
+// This file holds the end-to-end tests: a real tea.Program, a real repository,
+// real git subprocesses. Everything that does not need the program loop is in
+// render_test.go, driven through Update directly — that is deterministic and
+// hundreds of times faster.
+//
+// Exactly ONE teatest.WaitFor per program is allowed here. tm.Output() is a
+// consuming stream and Bubble Tea often paints the whole screen in a single
+// write, so an earlier wait can swallow the token a later wait is looking for.
+// That failure is timing-dependent: it passes normally and fails under -race.
 
-	// Wait for the async HEAD load to land, rather than sleeping.
+// TestEndToEnd runs the real program against a real repository and pins the
+// first frame. The initial selection is a binary file, so the wait token also
+// proves the status load, the diff request and the placeholder path all
+// completed.
+func TestEndToEnd(t *testing.T) {
+	tm := teatest.NewTestModel(t, ui.New(gittest.Small(t)),
+		teatest.WithInitialTermSize(80, 24))
+
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		return bytes.Contains(b, []byte("main"))
-	}, teatest.WithDuration(5*time.Second))
+		// An atomic token, never a composed string: differential rendering
+		// splits "Files (9)" into "Files", a cursor move, then "(9)".
+		return bytes.Contains(b, []byte("binary file"))
+	}, teatest.WithDuration(10*time.Second))
 
 	tm.Send(tea.KeyPressMsg{Code: 'q', Text: "q"})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(5*time.Second))
+	tm.WaitFinished(t, teatest.WithFinalTimeout(10*time.Second))
 
 	teatest.RequireEqualOutput(t, []byte(tm.FinalModel(t).(ui.Model).Body()))
 }
@@ -41,7 +53,7 @@ func TestQuitKeys(t *testing.T) {
 			tm := teatest.NewTestModel(t, ui.New(gittest.Small(t)),
 				teatest.WithInitialTermSize(80, 24))
 			tm.Send(k)
-			tm.WaitFinished(t, teatest.WithFinalTimeout(5*time.Second))
+			tm.WaitFinished(t, teatest.WithFinalTimeout(10*time.Second))
 		})
 	}
 }
