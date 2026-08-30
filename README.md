@@ -3,9 +3,9 @@
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), aiming to be
 fast on large repositories and more interactive than the alternatives.
 
-> **Status: early.** Milestone 3 is complete — a two-pane browser over the working tree with
-> syntax-highlighted diffs, staging by file, by hunk and by line, and commit and amend.
-> There is no log or branch pane yet.
+> **Status: early.** Milestone 4 is complete — a working-tree view with syntax-highlighted
+> diffs, staging by file, by hunk and by line, and commit and amend, plus a log view with a
+> commit graph and a commit detail pane. There is no branch pane yet.
 
 ## Why shell out to `git`
 
@@ -14,9 +14,16 @@ hooks, `commit.gpgsign`, credential helpers, `core.pager` and the rest of your a
 configuration all work, with no special cases. Tools built on a pure-Go git library silently
 break some of that.
 
-The cost is a process spawn per read, so the read paths use plumbing commands with `-z`
-(never porcelain), page the log by cursor rather than offset, and run off the render loop.
-`internal/git/exec_bench_test.go` measures each read against a budget so that stays true.
+The cost is a process spawn per read, so the read paths use plumbing commands with `-z`,
+resume the log walk from a set of SHAs rather than an offset, and run off the render loop.
+`internal/git/exec_bench_test.go` measures each read against a budget so that stays true, and
+it calls the same exported functions the UI does rather than repeating their argument lists —
+a budget guarding a command nothing runs any more is worse than no budget, because the numbers
+still look fine.
+
+Commit detail is the one read that uses porcelain. `git diff-tree` carries no commit message
+and prints nothing at all for the initial commit unless asked, so a detail pane built on it
+costs two processes for what `git show --format=…` answers in one.
 
 ## Requirements
 
@@ -30,6 +37,9 @@ The cost is a process spawn per read, so the read paths use plumbing commands wi
 ```sh
 go run ./cmd/bubblegit    # from anywhere inside a git repository
 ```
+
+`1` shows the working tree, `2` shows the log. Each is a pair of panes rather than a pane of
+its own: two is what an 80-column terminal has room for, and a third would be three slivers.
 
 `j`/`k` move, `g`/`G` jump to the ends, `ctrl+d`/`ctrl+u` half-page, `tab` switches pane,
 `t` toggles the diff between the worktree and staged sides, `q` or `ctrl+c` quits.
@@ -52,6 +62,20 @@ key — `q` types a q — except `ctrl+c`, which still quits.
 git runs your hooks and signs your commits, so a commit can fail for reasons that are not
 bubblegit's. When it does, the editor stays open holding what you wrote and shows what git
 said.
+
+In the log view (`2`) the left pane lists commits with a graph column and the right pane shows
+the selected commit: its message, and its patch highlighted the same way a working-tree diff
+is. A merge shows what it brought in over its first parent, which is the question a merge
+commit is usually being opened to answer, and the initial commit shows its whole tree — both
+of those render blank under the obvious git invocations.
+
+Nothing in the log view writes. The staging and commit keys are inert there rather than
+acting on the working-tree selection that is no longer on screen.
+
+The log loads a page at a time and fetches the next one a screenful before the cursor reaches
+the bottom. Paging resumes from the parents it has not read yet, not from the last SHA on
+screen: `git log <sha>` walks only that commit's ancestors, so on any history with a merge the
+obvious cursor drops the side branch entirely and no later page ever picks it up.
 
 Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
 
@@ -82,7 +106,7 @@ SHAs are byte-identical across runs and machines. Golden files depend on that.
 | M1 | ✅ files pane and syntax-highlighted diff, read-only |
 | M2 | ✅ staging by file, hunk and line |
 | M3 | ✅ commit and amend |
-| M4 | Log pane, commit detail, commit graph |
+| M4 | ✅ Log pane, commit detail, commit graph |
 | M5 | Branch pane |
 | M6 | Performance pass, mouse, resizable splitter |
 

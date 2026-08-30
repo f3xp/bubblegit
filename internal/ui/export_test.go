@@ -11,4 +11,8 @@ func (m Model) SelectedPath() string {
 	return f.Path
 }
 
-func (m Model) DiffFocused() bool { return m.focus == focusDiff }
+func (m Model) DiffFocused() bool { return m.focus == focusRight }
+
+func (m Model) InLogView() bool { return m.view == viewLog }
+
+func (m Model) SelectedCommit() string { return m.log.SelectedSHA() }

@@ -30,7 +30,7 @@ func TestCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := git.Commit(ctx, r, "subject line\n\nA body.\n", false); err != nil {
+	if err := git.CreateCommit(ctx, r, "subject line\n\nA body.\n", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,7 +51,7 @@ func TestCommit(t *testing.T) {
 func TestCommitKeepsHashLines(t *testing.T) {
 	ctx := context.Background()
 	r := git.New(gittest.Small(t))
-	if err := git.Commit(ctx, r, "fix #12\n\n# still content\n", false); err != nil {
+	if err := git.CreateCommit(ctx, r, "fix #12\n\n# still content\n", false); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := message(t, r), "fix #12\n\n# still content"; got != want {
@@ -62,7 +62,7 @@ func TestCommitKeepsHashLines(t *testing.T) {
 func TestAmendReplacesHead(t *testing.T) {
 	ctx := context.Background()
 	r := git.New(gittest.Small(t))
-	if err := git.Commit(ctx, r, "first", false); err != nil {
+	if err := git.CreateCommit(ctx, r, "first", false); err != nil {
 		t.Fatal(err)
 	}
 	head, err := git.ReadHead(ctx, r)
@@ -71,7 +71,7 @@ func TestAmendReplacesHead(t *testing.T) {
 	}
 	n := len(strings.Fields(revList(t, r)))
 
-	if err := git.Commit(ctx, r, "reworded", true); err != nil {
+	if err := git.CreateCommit(ctx, r, "reworded", true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := git.ReadHead(ctx, r)
@@ -103,10 +103,10 @@ func revList(t *testing.T, r *git.Runner) string {
 func TestAmendWithNothingStaged(t *testing.T) {
 	ctx := context.Background()
 	r := git.New(gittest.Small(t))
-	if err := git.Commit(ctx, r, "first", false); err != nil {
+	if err := git.CreateCommit(ctx, r, "first", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := git.Commit(ctx, r, "reworded only", true); err != nil {
+	if err := git.CreateCommit(ctx, r, "reworded only", true); err != nil {
 		t.Fatalf("message-only amend: %v", err)
 	}
 }
@@ -114,10 +114,10 @@ func TestAmendWithNothingStaged(t *testing.T) {
 func TestCommitWithNothingStagedFails(t *testing.T) {
 	ctx := context.Background()
 	r := git.New(gittest.Small(t))
-	if err := git.Commit(ctx, r, "first", false); err != nil {
+	if err := git.CreateCommit(ctx, r, "first", false); err != nil {
 		t.Fatal(err)
 	}
-	err := git.Commit(ctx, r, "nothing to record", false)
+	err := git.CreateCommit(ctx, r, "nothing to record", false)
 	if err == nil {
 		t.Fatal("committing an empty index succeeded")
 	}
@@ -134,7 +134,7 @@ func TestPreCommitHookFailureCarriesStderr(t *testing.T) {
 	r := git.New(dir)
 	writeHook(t, dir, "pre-commit", "#!/bin/sh\necho 'lint failed: trailing whitespace' >&2\nexit 1\n")
 
-	err := git.Commit(ctx, r, "blocked", false)
+	err := git.CreateCommit(ctx, r, "blocked", false)
 	if err == nil {
 		t.Fatal("the pre-commit hook did not block the commit")
 	}
@@ -172,7 +172,7 @@ func TestEditorIsNeverSpawned(t *testing.T) {
 func TestHeadMessage(t *testing.T) {
 	ctx := context.Background()
 	r := git.New(gittest.Small(t))
-	if err := git.Commit(ctx, r, "subject\n\nbody\n", false); err != nil {
+	if err := git.CreateCommit(ctx, r, "subject\n\nbody\n", false); err != nil {
 		t.Fatal(err)
 	}
 	got, err := git.HeadMessage(ctx, r)

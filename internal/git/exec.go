@@ -70,7 +70,16 @@ func (r *Runner) RunStdin(ctx context.Context, stdin []byte, args ...string) ([]
 }
 
 func (r *Runner) run(ctx context.Context, stdin []byte, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// core.quotepath escapes every non-ASCII byte in any path git prints
+	// outside -z output — the "diff --git a/…" headers of a patch, notably,
+	// where a UTF-8 filename arrives as \303\274 octal escapes. -z covers the
+	// read paths that have it; this covers the ones that do not.
+	//
+	// It is passed as argv rather than exported into the environment: the
+	// GIT_CONFIG_COUNT form would silently drop a user's own overrides, and
+	// the flag is left out of Error.Args so a failure still reports the
+	// command the caller actually asked for.
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.quotepath=false"}, args...)...)
 	cmd.Dir = r.Dir
 
 	// Inherit the user's environment so credential helpers, SSH agents and

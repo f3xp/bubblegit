@@ -43,6 +43,14 @@ type Map struct {
 	// the staged change.
 	ToggleStaged []string
 
+	// StatusView and LogView switch which pair of panes is on screen. They are
+	// views rather than more panes because the layout splits the terminal in
+	// two, and a third simultaneous pane on an 80-column terminal is three
+	// unreadable slivers. Numbered rather than mnemonic so M5's branch view
+	// extends the row instead of re-teaching the two that came before it.
+	StatusView []string
+	LogView    []string
+
 	Help []string
 	Quit []string
 }
@@ -75,6 +83,9 @@ func Default() Map {
 		Cancel:  []string{"esc"},
 
 		ToggleStaged: []string{"t"},
+
+		StatusView: []string{"1"},
+		LogView:    []string{"2"},
 
 		Help: []string{"?"},
 		Quit: []string{"q", "ctrl+c"},

@@ -135,9 +135,9 @@ func (h *harness) selectFile(path string) {
 	h.resolveDiff()
 }
 
-// focusDiffOn moves the diff cursor onto the first row matching kind and text.
+// focusRightOn moves the diff cursor onto the first row matching kind and text.
 // Tests name the line they mean; a row offset would move with the fixture.
-func (h *harness) focusDiffOn(kind git.LineKind, text string) {
+func (h *harness) focusRightOn(kind git.LineKind, text string) {
 	h.t.Helper()
 	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
 
@@ -310,26 +310,39 @@ func TestLayoutFitsTerminal(t *testing.T) {
 		{10, 2},
 		{1, 1}, // degenerate
 	}
-	for _, sz := range sizes {
-		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
-			m := New(t.TempDir())
-			updated, _ := m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
-			m = updated.(Model)
-			m.files.SetFiles([]git.FileStatus{
-				{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "a-fairly-long-file-name.txt"},
-				{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "ünïcødé-ファイル.txt"},
-			})
+	// Both views, because each splits the terminal by a different fraction and
+	// the clamps have to hold for either one.
+	views := map[string]view{"status": viewStatus, "log": viewLog}
 
-			lines := strings.Split(m.Body(), "\n")
-			if len(lines) > sz.h {
-				t.Errorf("frame is %d rows for a %d-row terminal", len(lines), sz.h)
-			}
-			for i, l := range lines {
-				if w := ansi.StringWidth(l); w > sz.w {
-					t.Errorf("row %d is %d cells wide for a %d-column terminal: %q", i, w, sz.w, l)
+	for _, sz := range sizes {
+		for name, v := range views {
+			t.Run(fmt.Sprintf("%s/%dx%d", name, sz.w, sz.h), func(t *testing.T) {
+				m := New(t.TempDir())
+				m.view = v
+				updated, _ := m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
+				m = updated.(Model)
+				m.files.SetFiles([]git.FileStatus{
+					{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "a-fairly-long-file-name.txt"},
+					{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "ünïcødé-ファイル.txt"},
+				})
+				m.log.SetCommits([]git.Commit{
+					{SHA: strings.Repeat("a", 40), Short: "aaaaaaa", Parents: []string{strings.Repeat("b", 40)},
+						Subject: "a subject long enough to need truncating somewhere"},
+					{SHA: strings.Repeat("b", 40), Short: "bbbbbbb",
+						Subject: "ünïcødé-ファイル in a commit subject"},
+				})
+
+				lines := strings.Split(m.Body(), "\n")
+				if len(lines) > sz.h {
+					t.Errorf("frame is %d rows for a %d-row terminal", len(lines), sz.h)
 				}
-			}
-		})
+				for i, l := range lines {
+					if w := ansi.StringWidth(l); w > sz.w {
+						t.Errorf("row %d is %d cells wide for a %d-column terminal: %q", i, w, sz.w, l)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -382,7 +395,7 @@ func TestToggleStagedSwitchesSide(t *testing.T) {
 func TestStageLineFromDiffPane(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusDiffOn(git.LineAdd, "18 edited")
+	h.focusRightOn(git.LineAdd, "18 edited")
 
 	h.run(h.key(" "))
 
@@ -400,7 +413,7 @@ func TestStageLineFromDiffPane(t *testing.T) {
 func TestStageHunkKey(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusDiffOn(git.LineContext, "16")
+	h.focusRightOn(git.LineContext, "16")
 
 	h.run(h.key("a"))
 
@@ -418,7 +431,7 @@ func TestStageHunkKey(t *testing.T) {
 func TestStageOnContextLineDoesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusDiffOn(git.LineContext, "16")
+	h.focusRightOn(git.LineContext, "16")
 
 	if cmd := h.key(" "); cmd != nil {
 		t.Fatal("the stage key on a context line issued a git command")
@@ -463,7 +476,7 @@ func TestUnstageFollowsTheVisibleSide(t *testing.T) {
 func TestPartialNoEOLIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("noeol.txt")
-	h.focusDiffOn(git.LineAdd, "no trailing newline, edited")
+	h.focusRightOn(git.LineAdd, "no trailing newline, edited")
 
 	if cmd := h.key(" "); cmd != nil {
 		t.Fatal("a partial no-EOL selection was sent to git apply")
@@ -479,7 +492,7 @@ func TestPartialNoEOLIsRefused(t *testing.T) {
 func TestStageKeyIgnoredWhileApplying(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusDiffOn(git.LineAdd, "18 edited")
+	h.focusRightOn(git.LineAdd, "18 edited")
 
 	if cmd := h.key(" "); cmd == nil {
 		t.Fatal("the first stage key produced no command")
@@ -497,7 +510,7 @@ func TestStageKeyIgnoredWhileApplying(t *testing.T) {
 func TestDiffCursorStaysPutAcrossReload(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusDiffOn(git.LineAdd, "18 edited")
+	h.focusRightOn(git.LineAdd, "18 edited")
 
 	_, _, before, _ := h.m.diff.Selection()
 	h.m.diff.SetLoading("two-hunks.txt")
@@ -515,7 +528,7 @@ func TestDiffCursorStaysPutAcrossReload(t *testing.T) {
 func TestStageIsRefusedWhileTheDiffIsLoading(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusDiffOn(git.LineAdd, "18 edited")
+	h.focusRightOn(git.LineAdd, "18 edited")
 
 	// Move to another file without answering the diff request it issues.
 	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -578,7 +591,7 @@ func TestPartialStageOfUntrackedFile(t *testing.T) {
 	if sel, _ := h.m.files.Selected(); !sel.IsUntracked() {
 		t.Fatal("untracked.txt should start with no index entry")
 	}
-	h.focusDiffOn(git.LineAdd, "u2")
+	h.focusRightOn(git.LineAdd, "u2")
 
 	h.run(h.key(" "))
 

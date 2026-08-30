@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-// Commit records the index. amend replaces HEAD instead of adding to it.
+// CreateCommit records the index. amend replaces HEAD instead of adding to it.
+//
+// The verb is not called Commit because the noun is: a Commit is a log entry
+// (see log.go), which is what most of this package now passes around.
 //
 // The message goes over stdin as `-F -` rather than `-m`: -m takes the message
 // as an argument, so a message containing anything git treats as an option is
@@ -20,7 +23,7 @@ import (
 // Nothing is guarded here that git already refuses clearly: an empty message,
 // an empty index, and `--amend` on an unborn branch all come back as an Error
 // carrying git's own stderr, which is what the UI shows.
-func Commit(ctx context.Context, r *Runner, msg string, amend bool) error {
+func CreateCommit(ctx context.Context, r *Runner, msg string, amend bool) error {
 	args := []string{"commit", "-F", "-"}
 	if amend {
 		args = append(args, "--amend")
