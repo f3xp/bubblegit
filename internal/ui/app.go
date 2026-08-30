@@ -22,6 +22,11 @@ import (
 
 // gitTimeout bounds any single git invocation so a wedged process (a hung
 // credential helper, a network remote) cannot leave a pane loading forever.
+//
+// ponytail: one timeout for every call, and commit is the one that will reach
+// it first — a pre-commit hook running a test suite passes 30s routinely, and
+// the commit git actually completed then reports as a deadline error. Give
+// commit its own budget when that shows up, not before.
 const gitTimeout = 30 * time.Second
 
 // filesPaneWidth is the fraction of the terminal given to the file list.
@@ -289,12 +294,24 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showStaged = !m.showStaged
 		return m, m.loadDiff()
 
+	// Both refuse while a stage is in flight. applying is one flag for every
+	// write, so opening the editor mid-apply lets a commit reach doCommit()
+	// while the flag is still held by the apply — the confirm would then do
+	// nothing, with nothing on screen to say why. Refusing at the door also
+	// keeps the two arrival handlers from clearing each other's flag, since
+	// only one write can ever be outstanding.
 	case keys.Matches(m.keys.Commit, k):
+		if m.applying {
+			return m, nil
+		}
 		cmd := m.commit.Open("", false)
 		m.layout()
 		return m, cmd
 
 	case keys.Matches(m.keys.Amend, k):
+		if m.applying {
+			return m, nil
+		}
 		return m, m.loadHeadMessage()
 
 	case keys.Matches(m.keys.NextPane, k), keys.Matches(m.keys.PrevPane, k):

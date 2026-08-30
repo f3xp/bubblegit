@@ -11,6 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/teatest/v2"
+
+	"github.com/f3xp/bubblegit/internal/git"
 )
 
 // headMessage reads HEAD's message straight from git, so the assertion does
@@ -250,6 +252,30 @@ func TestSecondConfirmIsIgnoredWhileCommitting(t *testing.T) {
 	}
 }
 
+// applying is one flag for every write. Letting the editor open mid-apply
+// would put a commit in front of a guard it cannot see: doCommit refuses while
+// the flag is held, so the confirm would do nothing and say nothing.
+func TestCommitKeyIsRefusedWhileStaging(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("plain.txt")
+
+	if cmd := h.key(" "); cmd == nil {
+		t.Fatal("the stage key produced no command")
+	}
+	if !h.m.applying {
+		t.Fatal("the stage key did not mark a write in flight")
+	}
+
+	h.press("c")
+	if h.m.commit.Active() {
+		t.Error("the editor opened while a stage was still in flight")
+	}
+	h.press("C")
+	if h.m.commit.Active() {
+		t.Error("the amend key opened the editor while a stage was in flight")
+	}
+}
+
 // The editor replaces both panes, so it is the one thing sized against the
 // full width. TestLayoutFitsTerminal covers the two-pane case.
 func TestCommitEditorFitsTerminal(t *testing.T) {
@@ -275,14 +301,27 @@ func TestCommitEditorFitsTerminal(t *testing.T) {
 // A git error is rendered on one line however many git wrote, or it pushes the
 // editor out of the pane it was sized for.
 func TestCommitErrorDoesNotOverflow(t *testing.T) {
-	h := newHarness(t)
-	writeHook(t, h.r.Dir, "pre-commit", "#!/bin/sh\nprintf 'one\\ntwo\\nthree\\nfour\\n' >&2\nexit 1\n")
-	h.press("c")
-	h.typeText("rejected")
-	h.run(h.confirm())
+	// 12x3 is the case the two sizings can disagree on: the error claims a row
+	// the editor was already using, and there is only one to share.
+	for _, size := range [][2]int{{80, 24}, {12, 3}} {
+		h := newHarness(t)
+		h.send(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		writeHook(t, h.r.Dir, "pre-commit", "#!/bin/sh\nprintf 'one\\ntwo\\nthree\\nfour\\n' >&2\nexit 1\n")
+		h.press("c")
+		h.typeText("rejected")
+		h.run(h.confirm())
 
-	if lines := strings.Split(h.m.Body(), "\n"); len(lines) > 24 {
-		t.Errorf("the frame grew to %d rows on a four-line error", len(lines))
+		lines := strings.Split(h.m.Body(), "\n")
+		if len(lines) > size[1] {
+			t.Errorf("%dx%d: %d rows on a four-line error, want at most %d",
+				size[0], size[1], len(lines), size[1])
+		}
+		for i, l := range lines {
+			if w := ansi.StringWidth(l); w > size[0] {
+				t.Errorf("%dx%d: row %d is %d cells wide, want at most %d",
+					size[0], size[1], i, w, size[0])
+			}
+		}
 	}
 }
 
@@ -295,7 +334,14 @@ func TestCommitEditorRenders(t *testing.T) {
 
 func writeHook(t *testing.T, dir, name, body string) {
 	t.Helper()
-	hooks := filepath.Join(dir, ".git", "hooks")
+	// Ask git where hooks live rather than assuming .git/hooks: a developer
+	// with core.hooksPath set globally would otherwise get a test that passes
+	// because the hook never ran.
+	out, err := git.New(dir).Run(context.Background(), "rev-parse", "--git-path", "hooks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := filepath.Join(dir, strings.TrimSpace(string(out)))
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}

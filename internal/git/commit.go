@@ -31,6 +31,10 @@ func Commit(ctx context.Context, r *Runner, msg string, amend bool) error {
 
 // HeadMessage returns HEAD's commit message, to pre-fill an amend. An unborn
 // branch has no HEAD, and reports an empty message rather than an error.
+//
+// ponytail: that fallback is a second process spawn, not a free check, and it
+// runs on every log failure rather than only the unborn one. It is on an error
+// path, so one extra spawn costs nothing worth a cheaper test.
 func HeadMessage(ctx context.Context, r *Runner) (string, error) {
 	out, err := r.Run(ctx, "log", "-1", "--format=%B")
 	if err != nil {
