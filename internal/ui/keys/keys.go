@@ -19,9 +19,14 @@ type Map struct {
 	NextPane []string
 	PrevPane []string
 
-	Stage  []string
-	Commit []string
-	Branch []string
+	// Stage acts on whatever has focus: a whole file in the list, the line or
+	// hunk header under the cursor in the diff. StageHunk takes the whole hunk
+	// from anywhere inside it, so staging one does not mean scrolling back up
+	// to its header.
+	Stage     []string
+	StageHunk []string
+	Commit    []string
+	Branch    []string
 
 	// ToggleStaged switches the diff pane between the worktree change and
 	// the staged change.
@@ -45,9 +50,13 @@ func Default() Map {
 		NextPane: []string{"tab"},
 		PrevPane: []string{"shift+tab"},
 
-		Stage:  []string{" "},
-		Commit: []string{"c"},
-		Branch: []string{"b"},
+		// "space", not " ": Key.String() deliberately skips the text form for
+		// the space key and falls back to the keystroke name, so a binding of
+		// " " matches nothing at all.
+		Stage:     []string{"space"},
+		StageHunk: []string{"a"},
+		Commit:    []string{"c"},
+		Branch:    []string{"b"},
 
 		ToggleStaged: []string{"t"},
 

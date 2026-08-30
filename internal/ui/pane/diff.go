@@ -12,15 +12,32 @@ import (
 	"github.com/f3xp/bubblegit/internal/ui/theme"
 )
 
-// Diff renders one file's diff.
+// Diff renders one file's diff and carries the cursor that staging keys off.
 type Diff struct {
 	vp    viewport.Model
 	title string
+
+	// fd and rows are what turn a screen position back into a patch. rows has
+	// exactly one entry per rendered row, which only holds because SoftWrap is
+	// off — a wrapped line would occupy two rows and slide every row below it
+	// onto the wrong hunk.
+	fd     git.FileDiff
+	rows   []rowRef
+	cursor int
+	// path is the diff currently loaded, as opposed to title, which changes
+	// the moment a new one is requested. Reloading the same file after staging
+	// has to leave the cursor where the user left it.
+	path string
 
 	loading bool
 	err     error
 	empty   string // why there is nothing to show, when there is nothing
 }
+
+// rowRef maps a rendered row back to the diff it came from. Line is -1 for a
+// hunk header row, which is what makes putting the cursor on a header mean
+// "the whole hunk" without a mode of its own.
+type rowRef struct{ hunk, line int }
 
 func NewDiff() Diff {
 	vp := viewport.New()
@@ -35,6 +52,7 @@ func NewDiff() Diff {
 func (d *Diff) SetSize(w, h int) {
 	d.vp.SetWidth(w)
 	d.vp.SetHeight(h)
+	d.scrollToCursor()
 }
 
 // SetLoading clears the body while a new diff is in flight.
@@ -46,9 +64,18 @@ func (d *Diff) SetLoading(title string) {
 	d.loading = true
 	d.err = nil
 	d.title = title
+	// The row map goes with the content. It points into a diff that is no
+	// longer what this pane stands for, so a stage key pressed between a
+	// request and its answer would build a patch for the file that was on
+	// screen a moment ago and apply it without complaint. The cursor row is
+	// kept: reloading the same path has to land where the user left it.
+	d.fd, d.rows = git.FileDiff{}, nil
 	d.vp.SetContent("")
-	d.vp.GotoTop()
 }
+
+// Ready reports whether the pane is showing a diff it has actually received,
+// as opposed to one still in flight or an error.
+func (d *Diff) Ready() bool { return !d.loading && d.err == nil }
 
 func (d *Diff) SetError(err error) {
 	d.loading = false
@@ -59,7 +86,15 @@ func (d *Diff) SetEmpty(reason string) {
 	d.loading = false
 	d.err = nil
 	d.empty = reason
+	d.clear()
+}
+
+// clear drops the diff and everything derived from it, so a stale rowRef can
+// never outlive the hunks it points into.
+func (d *Diff) clear() {
+	d.fd, d.rows, d.cursor = git.FileDiff{}, nil, 0
 	d.vp.SetContent("")
+	d.vp.SetYOffset(0)
 }
 
 func (d *Diff) SetDiff(fd git.FileDiff) {
@@ -67,19 +102,40 @@ func (d *Diff) SetDiff(fd git.FileDiff) {
 	d.err = nil
 	d.title = fd.Path
 
+	// Staging a hunk reloads the same file with that hunk gone. Starting over
+	// at the top each time would walk the cursor back to the first hunk after
+	// every keystroke, so the row is kept and clamped instead.
+	same := fd.Path == d.path
+	cursor := d.cursor
+	d.clear()
+	d.path = fd.Path
+
 	switch {
 	case fd.Binary:
 		d.empty = "binary file — no textual diff"
-		d.vp.SetContent("")
 		return
 	case fd.IsEmpty():
 		d.empty = "no changes"
-		d.vp.SetContent("")
 		return
 	}
 
-	d.vp.SetContentLines(renderLines(fd))
-	d.vp.GotoTop()
+	lines, rows := renderLines(fd)
+	d.fd, d.rows = fd, rows
+	d.vp.SetContentLines(lines)
+	if same {
+		d.cursor = cursor
+	}
+	d.clampCursor()
+}
+
+// Selection reports what the cursor is on. line is -1 on a hunk header row,
+// meaning the whole hunk. ok is false when there is nothing stageable.
+func (d *Diff) Selection() (fd git.FileDiff, hunk, line int, ok bool) {
+	if d.cursor < 0 || d.cursor >= len(d.rows) {
+		return git.FileDiff{}, 0, 0, false
+	}
+	r := d.rows[d.cursor]
+	return d.fd, r.hunk, r.line, true
 }
 
 func (d *Diff) Update(msg tea.Msg) tea.Cmd {
@@ -88,18 +144,53 @@ func (d *Diff) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (d *Diff) ScrollBy(n int) {
-	if n > 0 {
-		d.vp.ScrollDown(n)
-		return
-	}
-	d.vp.ScrollUp(-n)
+// MoveBy moves the cursor, scrolling only as far as it takes to keep it on
+// screen. The viewport's own scroll methods are not used for navigation: the
+// cursor is what staging acts on, so a view that can scroll away from it would
+// stage a line the user cannot see.
+func (d *Diff) MoveBy(n int) {
+	d.cursor += n
+	d.clampCursor()
 }
 
-func (d *Diff) HalfPageDown() { d.vp.HalfPageDown() }
-func (d *Diff) HalfPageUp()   { d.vp.HalfPageUp() }
-func (d *Diff) Top()          { d.vp.GotoTop() }
-func (d *Diff) Bottom()       { d.vp.GotoBottom() }
+func (d *Diff) HalfPageDown() { d.MoveBy(d.halfPage()) }
+func (d *Diff) HalfPageUp()   { d.MoveBy(-d.halfPage()) }
+func (d *Diff) Top()          { d.cursor = 0; d.clampCursor() }
+func (d *Diff) Bottom()       { d.cursor = len(d.rows) - 1; d.clampCursor() }
+
+func (d *Diff) halfPage() int {
+	if h := d.vp.Height() / 2; h > 0 {
+		return h
+	}
+	return 1
+}
+
+func (d *Diff) clampCursor() {
+	if d.cursor >= len(d.rows) {
+		d.cursor = len(d.rows) - 1
+	}
+	if d.cursor < 0 {
+		d.cursor = 0
+	}
+	d.scrollToCursor()
+}
+
+// scrollToCursor keeps the cursor inside the visible window, moving the view
+// by the minimum. viewport.EnsureVisible would do this in one call but parks
+// the target line at the top of the pane, so a single j at the bottom edge
+// jumps a whole page.
+func (d *Diff) scrollToCursor() {
+	h := d.vp.Height()
+	if h <= 0 {
+		return
+	}
+	switch off := d.vp.YOffset(); {
+	case d.cursor < off:
+		d.vp.SetYOffset(d.cursor)
+	case d.cursor >= off+h:
+		d.vp.SetYOffset(d.cursor - h + 1)
+	}
+}
 
 func (d *Diff) Title() string { return d.title }
 
@@ -112,6 +203,27 @@ func (d *Diff) View() string {
 	case d.vp.TotalLineCount() == 0:
 		return theme.Dim.Render(d.empty)
 	}
+
+	// The cursor is a marker column, not a highlighted row.
+	//
+	// A background style would be the obvious choice and does not survive the
+	// content: every rendered fragment ends in a reset — lipgloss's own, and
+	// chroma's \x1b[0m after each highlighted token — which closes the
+	// background partway along, so the gutter and the trailing padding light up
+	// and the code between them does not. A gutter column is drawn separately
+	// from the line, so nothing in the line can cancel it, and the viewport
+	// keeps it in place when the diff is scrolled sideways.
+	//
+	// The closure captures the row number by value: Model is copied on every
+	// Update, so one holding a pointer into this struct would mark a row
+	// several keystrokes stale.
+	cursor := d.cursor
+	d.vp.LeftGutterFunc = func(g viewport.GutterContext) string {
+		if g.Index == cursor {
+			return theme.Cursor.Render("▌")
+		}
+		return " "
+	}
 	return d.vp.View()
 }
 
@@ -122,17 +234,20 @@ const numWidth = 4
 // gutterWidth covers both columns and the space between them.
 const gutterWidth = numWidth*2 + 1
 
-func renderLines(fd git.FileDiff) []string {
+func renderLines(fd git.FileDiff) ([]string, []rowRef) {
 	hl := highlight.For(fd.Path)
 
 	var lines []string
-	for _, h := range fd.Hunks {
+	var rows []rowRef
+	for hi, h := range fd.Hunks {
 		lines = append(lines, theme.Meta.Render(h.Header))
-		for _, l := range h.Lines {
+		rows = append(rows, rowRef{hunk: hi, line: -1})
+		for li, l := range h.Lines {
 			lines = append(lines, renderLine(hl, l))
+			rows = append(rows, rowRef{hunk: hi, line: li})
 		}
 	}
-	return lines
+	return lines, rows
 }
 
 func renderLine(hl *highlight.Highlighter, l git.Line) string {

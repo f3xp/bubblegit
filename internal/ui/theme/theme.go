@@ -16,6 +16,12 @@ var (
 	Unstaged = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
 
 	Selected = lipgloss.NewStyle().Background(lipgloss.Color("#313244"))
+
+	// Cursor marks the diff row that staging acts on. It colours a glyph in the
+	// viewport's gutter rather than the row itself: a background cannot survive
+	// the resets the syntax highlighter leaves inside the line, and it has to
+	// out-read the file list's Selected, which stays visible beside it.
+	Cursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa"))
 	Title    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#cdd6f4"))
 	TitleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))
 )

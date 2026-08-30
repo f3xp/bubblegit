@@ -3,8 +3,8 @@
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), aiming to be
 fast on large repositories and more interactive than the alternatives.
 
-> **Status: early.** Milestone 1 is complete — a two-pane browser showing the working tree and
-> syntax-highlighted diffs. It is read-only: nothing stages, commits or writes yet.
+> **Status: early.** Milestone 2 is complete — a two-pane browser over the working tree with
+> syntax-highlighted diffs, and staging by file, by hunk and by line. Nothing commits yet.
 
 ## Why shell out to `git`
 
@@ -33,6 +33,16 @@ go run ./cmd/bubblegit    # from anywhere inside a git repository
 `j`/`k` move, `g`/`G` jump to the ends, `ctrl+d`/`ctrl+u` half-page, `tab` switches pane,
 `t` toggles the diff between the worktree and staged sides, `q` or `ctrl+c` quits.
 
+`space` stages what is under the cursor — the whole file in the list, one line in the diff, or
+the whole hunk when the cursor is on a `@@` header. `a` takes the hunk from anywhere inside it.
+Both reverse into un-staging when the pane is showing the staged side, which is what the diff
+pane title says.
+
+A few changes cannot be split and stage whole instead: a binary file, a file the change deletes
+outright, and a hunk that ends without a trailing newline. The first two are silent — `space`
+simply takes the file — and the third says so, because a partial patch there is one git applies
+happily and wrongly.
+
 Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
 
 ## Development
@@ -47,7 +57,9 @@ go test ./... -short           # skip the 100k-commit fixture
 Test fixtures are generated, not checked in. `testdata/fixtures/mksmall.sh` builds a repo
 covering the cases that break naive parsers — paths with spaces and non-ASCII bytes, a file
 with no trailing newline, a merge commit, and a tree that is simultaneously staged, unstaged
-and untracked. `mkbig.sh` builds 100k commits in about eleven seconds via `git fast-import`.
+and untracked. It also carries a file whose two edits stay two separate hunks under the default
+`-U3`, which is the only way to test that staging one hunk leaves the other alone.
+`mkbig.sh` builds 100k commits in about eleven seconds via `git fast-import`.
 
 Both pin author and committer identity and dates and null out global and system config, so
 SHAs are byte-identical across runs and machines. Golden files depend on that.
@@ -58,7 +70,7 @@ SHAs are byte-identical across runs and machines. Golden files depend on that.
 | --- | --- |
 | M0 | ✅ git layer, fixtures, benchmark harness, app skeleton |
 | M1 | ✅ files pane and syntax-highlighted diff, read-only |
-| M2 | Staging by hunk and by line |
+| M2 | ✅ staging by file, hunk and line |
 | M3 | Commit and amend |
 | M4 | Log pane, commit detail, commit graph |
 | M5 | Branch pane |

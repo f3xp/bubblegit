@@ -43,6 +43,11 @@ type statusMsg struct {
 	err   error
 }
 
+// stagedMsg reports that a stage or un-stage finished. It carries no payload:
+// the index moved, so every derived view has to be re-read from git rather
+// than patched locally.
+type stagedMsg struct{ err error }
+
 // diffMsg carries the generation of the request that produced it. Anything
 // older than the pane's current generation is a stale answer to a question
 // the user has already moved on from.
@@ -82,6 +87,15 @@ type Model struct {
 	// the worktree-vs-index one. A partially staged file has both, and
 	// without a toggle half its changes are unreachable.
 	showStaged bool
+
+	// applying suppresses stage keys while one is in flight.
+	//
+	// diffGen does not cover this: it discards stale answers, and the problem
+	// here is a stale question. Holding the stage key builds every patch from
+	// the diff on screen, but the first apply has already moved the index out
+	// from under the rest, so they fail one after another and a correct action
+	// reads as an error storm.
+	applying bool
 
 	// narrow drops to a single pane when there is not room for two.
 	narrow bool
@@ -134,11 +148,7 @@ func (m *Model) loadDiff() tea.Cmd {
 	gen := m.diffGen
 	repo := m.repo
 
-	// A file may be changed in the index, in the worktree, or both. The
-	// worktree change is the more useful default — it is what the user is
-	// about to stage — but a file with no worktree change has only a staged
-	// one to show, and the toggle reaches the staged side of the rest.
-	staged := m.showStaged || (sel.IsStaged() && !sel.IsUnstaged())
+	staged := m.stagedSide()
 	untracked := sel.IsUntracked()
 
 	m.diff.SetLoading(sel.Path)
@@ -149,6 +159,26 @@ func (m *Model) loadDiff() tea.Cmd {
 		d, err := git.DiffFile(ctx, repo, sel.Path, staged, untracked)
 		return diffMsg{gen: gen, diff: d, err: err}
 	}
+}
+
+// stagedSide reports whether the diff pane is showing the index-vs-HEAD change
+// rather than the worktree-vs-index one.
+//
+// A file may be changed in the index, in the worktree, or both. The worktree
+// change is the more useful default — it is what the user is about to stage —
+// but a file with no worktree change has only a staged one to show, and the
+// toggle reaches the staged side of the rest.
+//
+// Every caller has to agree: this decides which diff is fetched, what the
+// pane title claims, and — since staging the side already on screen is the
+// only thing the key can sensibly mean — whether the stage key stages or
+// un-stages.
+func (m Model) stagedSide() bool {
+	if m.showStaged {
+		return true
+	}
+	sel, ok := m.files.Selected()
+	return ok && sel.IsStaged() && !sel.IsUnstaged()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -168,6 +198,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.files.SetFiles(msg.files)
 		return m, m.loadDiff()
+
+	case stagedMsg:
+		m.applying = false
+		if msg.err != nil {
+			// index.lock contention and a patch that will not apply both land
+			// here, and both are things the user has to see: silently doing
+			// nothing on a stage key is indistinguishable from a broken key.
+			m.diff.SetError(msg.err)
+			return m, nil
+		}
+		return m, m.loadStatus()
 
 	case diffMsg:
 		// Discard answers to superseded questions.
@@ -228,6 +269,10 @@ func (m Model) handleFilesKey(k string) (tea.Model, tea.Cmd) {
 		m.files.MoveBy(m.files.Len() / 2)
 	case keys.Matches(m.keys.PageUp, k):
 		m.files.MoveBy(-m.files.Len() / 2)
+	case keys.Matches(m.keys.Stage, k), keys.Matches(m.keys.StageHunk, k):
+		// In the file list both keys mean the whole file: there is no hunk to
+		// single out from here.
+		return m, m.stageFile()
 	default:
 		return m, nil
 	}
@@ -243,9 +288,9 @@ func (m Model) handleFilesKey(k string) (tea.Model, tea.Cmd) {
 func (m Model) handleDiffKey(k string) (tea.Model, tea.Cmd) {
 	switch {
 	case keys.Matches(m.keys.Down, k):
-		m.diff.ScrollBy(1)
+		m.diff.MoveBy(1)
 	case keys.Matches(m.keys.Up, k):
-		m.diff.ScrollBy(-1)
+		m.diff.MoveBy(-1)
 	case keys.Matches(m.keys.PageDown, k):
 		m.diff.HalfPageDown()
 	case keys.Matches(m.keys.PageUp, k):
@@ -254,8 +299,92 @@ func (m Model) handleDiffKey(k string) (tea.Model, tea.Cmd) {
 		m.diff.Top()
 	case keys.Matches(m.keys.Bottom, k):
 		m.diff.Bottom()
+	case keys.Matches(m.keys.Stage, k):
+		return m, m.stageSelection(false)
+	case keys.Matches(m.keys.StageHunk, k):
+		return m, m.stageSelection(true)
 	}
 	return m, nil
+}
+
+// stageSelection stages the line or hunk under the diff cursor, or un-stages
+// it when the pane is showing the staged side.
+func (m *Model) stageSelection(wholeHunk bool) tea.Cmd {
+	sel, ok := m.files.Selected()
+	if !ok || m.applying || !m.diff.Ready() {
+		// Nothing on screen is a diff of the selected file yet, so there is no
+		// honest answer to what this key means. Doing nothing beats guessing.
+		return nil
+	}
+	reverse := m.stagedSide()
+
+	fd, hunk, line, ok := m.diff.Selection()
+	// ok is false for a binary file, which has no cursor to read.
+	if !ok || wholeFileOnly(sel, reverse) {
+		return m.stageFile()
+	}
+	if wholeHunk {
+		line = -1
+	}
+
+	patch, err := git.Patch(fd, hunk, line, reverse)
+	switch {
+	case err != nil:
+		m.diff.SetError(err)
+		return nil
+	case patch == nil:
+		// The cursor is on a context line. Nothing to stage, and not a
+		// mistake, so no error either.
+		return nil
+	}
+
+	m.applying = true
+	repo := m.repo
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		return stagedMsg{err: git.ApplyCached(ctx, repo, patch, reverse)}
+	}
+}
+
+// stageFile stages or un-stages the selected path outright.
+func (m *Model) stageFile() tea.Cmd {
+	sel, ok := m.files.Selected()
+	if !ok || m.applying {
+		return nil
+	}
+
+	m.applying = true
+	repo, path, reverse := m.repo, sel.Path, m.stagedSide()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		if reverse {
+			return stagedMsg{err: git.UnstageFile(ctx, repo, path)}
+		}
+		return stagedMsg{err: git.StageFile(ctx, repo, path)}
+	}
+}
+
+// wholeFileOnly reports whether a change can only be staged in one piece.
+//
+// A deletion cannot: `git apply --cached` on an all-deletion patch writes the
+// empty blob into the index and leaves the entry behind, so git never learns
+// the file is gone.
+//
+// A conflict cannot either, for a blunter reason. An unmerged path diffs as a
+// combined diff — "@@@" headers, two columns of +/- prefixes — which the
+// parser reads as an ordinary one and turns into a patch describing lines that
+// do not exist. `git add` on a conflicted path is the operation that means
+// something there anyway: it resolves it with what is in the worktree.
+func wholeFileOnly(f git.FileStatus, staged bool) bool {
+	if f.IsUnmerged() {
+		return true
+	}
+	if staged {
+		return f.Staged == 'D'
+	}
+	return f.Unstaged == 'D'
 }
 
 // minPaneWidth keeps both panes legible rather than letting one collapse.
@@ -361,14 +490,14 @@ func (m Model) body() string {
 	if m.narrow {
 		// One pane at a time; tab swaps which one is visible.
 		if m.focus == focusDiff {
-			panes = m.framed(diffTitle(m.diff.Title(), m.showStaged), m.diff.View(), m.diffW, true)
+			panes = m.framed(diffTitle(m.diff.Title(), m.stagedSide()), m.diff.View(), m.diffW, true)
 		} else {
 			panes = m.framed(filesTitle, m.files.View(), m.filesW, true)
 		}
 	} else {
 		panes = lipgloss.JoinHorizontal(lipgloss.Top,
 			m.framed(filesTitle, m.files.View(), m.filesW, m.focus == focusFiles),
-			m.framed(diffTitle(m.diff.Title(), m.showStaged), m.diff.View(), m.diffW, m.focus == focusDiff),
+			m.framed(diffTitle(m.diff.Title(), m.stagedSide()), m.diff.View(), m.diffW, m.focus == focusDiff),
 		)
 	}
 
