@@ -5,6 +5,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -25,6 +26,8 @@ const gitTimeout = 30 * time.Second
 
 // filesPaneWidth is the fraction of the terminal given to the file list.
 const filesPaneWidth = 0.34
+
+var errEmptyMessage = errors.New("empty commit message")
 
 type focus int
 
@@ -48,6 +51,19 @@ type statusMsg struct {
 // than patched locally.
 type stagedMsg struct{ err error }
 
+// commitMsg reports that a commit or amend finished. Like stagedMsg it carries
+// no payload: HEAD moved and the index emptied, so everything derived from
+// either has to be re-read.
+type commitMsg struct{ err error }
+
+// amendMsg carries HEAD's message back, to pre-fill a reword. Reading it is a
+// git call like any other, so the editor opens on the answer rather than
+// blocking Update on the question.
+type amendMsg struct {
+	msg string
+	err error
+}
+
 // diffMsg carries the generation of the request that produced it. Anything
 // older than the pane's current generation is a stale answer to a question
 // the user has already moved on from.
@@ -65,9 +81,10 @@ type Model struct {
 	head git.Head
 	err  error
 
-	files pane.Files
-	diff  pane.Diff
-	focus focus
+	files  pane.Files
+	diff   pane.Diff
+	commit pane.Commit
+	focus  focus
 
 	// diffGen is bumped on every diff request. A diffMsg whose gen is not the
 	// current one is discarded.
@@ -88,7 +105,10 @@ type Model struct {
 	// without a toggle half its changes are unreachable.
 	showStaged bool
 
-	// applying suppresses stage keys while one is in flight.
+	// applying suppresses writes while one is in flight — a stage, a commit or
+	// an amend. A commit is the one that needs it most: signing and a
+	// pre-commit hook can take seconds, which is ample time to press the key
+	// again and spawn a second `git commit`.
 	//
 	// diffGen does not cover this: it discards stale answers, and the problem
 	// here is a stale question. Holding the stage key builds every patch from
@@ -104,10 +124,11 @@ type Model struct {
 
 func New(root string) Model {
 	return Model{
-		root: root,
-		repo: git.New(root),
-		keys: keys.Default(),
-		diff: pane.NewDiff(),
+		root:   root,
+		repo:   git.New(root),
+		keys:   keys.Default(),
+		diff:   pane.NewDiff(),
+		commit: pane.NewCommit(),
 	}
 }
 
@@ -210,6 +231,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadStatus()
 
+	case commitMsg:
+		m.applying = false
+		if msg.err != nil {
+			// The editor stays open and keeps the message. A rejected commit
+			// is usually a pre-commit hook or a failed signature, and throwing
+			// away what the user just wrote is not a reasonable response to
+			// either.
+			m.commit.SetError(msg.err)
+			return m, nil
+		}
+		m.commit.Close()
+		m.layout()
+		return m, tea.Batch(m.loadHead(), m.loadStatus())
+
+	case amendMsg:
+		cmd := m.commit.Open(msg.msg, true)
+		if msg.err != nil {
+			m.commit.SetError(msg.err)
+		}
+		m.layout()
+		return m, cmd
+
 	case diffMsg:
 		// Discard answers to superseded questions.
 		if msg.gen != m.diffGen {
@@ -230,6 +273,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 
+	// The message editor is a mode, and while it is open it owns every key:
+	// `q` types a q, `space` types a space, `t` types a t. This is the one
+	// place the flat key dispatch has to branch before it reaches the
+	// bindings, because those bindings are single letters.
+	if m.commit.Active() {
+		return m.handleCommitKey(msg, k)
+	}
+
 	switch {
 	case keys.Matches(m.keys.Quit, k):
 		return m, tea.Quit
@@ -237,6 +288,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case keys.Matches(m.keys.ToggleStaged, k):
 		m.showStaged = !m.showStaged
 		return m, m.loadDiff()
+
+	case keys.Matches(m.keys.Commit, k):
+		cmd := m.commit.Open("", false)
+		m.layout()
+		return m, cmd
+
+	case keys.Matches(m.keys.Amend, k):
+		return m, m.loadHeadMessage()
 
 	case keys.Matches(m.keys.NextPane, k), keys.Matches(m.keys.PrevPane, k):
 		if m.focus == focusFiles {
@@ -251,6 +310,59 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleDiffKey(k)
 	}
 	return m.handleFilesKey(k)
+}
+
+// handleCommitKey routes to the editor, letting only its own bindings through.
+func (m Model) handleCommitKey(msg tea.KeyPressMsg, k string) (tea.Model, tea.Cmd) {
+	switch {
+	case keys.Matches(m.keys.Cancel, k):
+		m.commit.Close()
+		m.layout()
+		return m, nil
+
+	// ctrl+c by name rather than through the Quit binding, which also holds
+	// `q`. A terminal program that swallows ctrl+c has trapped the user, and
+	// discarding an unfinished commit message is what ctrl+c means anyway.
+	case k == "ctrl+c":
+		return m, tea.Quit
+
+	case keys.Matches(m.keys.Confirm, k):
+		return m, m.doCommit()
+	}
+	return m, m.commit.Update(msg)
+}
+
+// doCommit records the index, or replaces HEAD when the editor was opened to
+// amend. The editor stays open until git accepts it.
+func (m *Model) doCommit() tea.Cmd {
+	if m.applying {
+		return nil
+	}
+	if m.commit.Empty() {
+		// git refuses an empty message too, but only after running the
+		// pre-commit hook, which may take seconds and have side effects.
+		m.commit.SetError(errEmptyMessage)
+		return nil
+	}
+
+	m.applying = true
+	repo, msg, amend := m.repo, m.commit.Value(), m.commit.Amending()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		return commitMsg{err: git.Commit(ctx, repo, msg, amend)}
+	}
+}
+
+// loadHeadMessage fetches HEAD's message and opens the editor on the answer.
+func (m Model) loadHeadMessage() tea.Cmd {
+	repo := m.repo
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		msg, err := git.HeadMessage(ctx, repo)
+		return amendMsg{msg: msg, err: err}
+	}
 }
 
 func (m Model) handleFilesKey(k string) (tea.Model, tea.Cmd) {
@@ -428,6 +540,9 @@ func (m *Model) layout() {
 
 	m.files.SetSize(m.contentW(m.filesW), m.contentH())
 	m.diff.SetSize(m.contentW(m.diffW), m.contentH())
+	// The editor replaces both panes rather than sitting beside them, so it is
+	// the one thing here sized against the full width.
+	m.commit.SetSize(m.contentW(m.width), m.contentH())
 }
 
 // contentW is the usable width inside a pane's border.
@@ -487,7 +602,9 @@ func (m Model) body() string {
 	}
 
 	var panes string
-	if m.narrow {
+	if m.commit.Active() {
+		panes = m.framed(m.commit.Title(), m.commit.View(), m.width, true)
+	} else if m.narrow {
 		// One pane at a time; tab swaps which one is visible.
 		if m.focus == focusDiff {
 			panes = m.framed(diffTitle(m.diff.Title(), m.stagedSide()), m.diff.View(), m.diffW, true)

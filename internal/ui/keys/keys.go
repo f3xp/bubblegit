@@ -25,8 +25,19 @@ type Map struct {
 	// to its header.
 	Stage     []string
 	StageHunk []string
-	Commit    []string
-	Branch    []string
+
+	// Commit opens the message editor; Amend opens it pre-filled with HEAD's
+	// message. Two keys rather than a toggle inside the editor: the editor is
+	// already a mode, and a mode inside a mode is one too many.
+	Commit []string
+	Amend  []string
+	Branch []string
+
+	// Confirm and Cancel only mean anything while the message editor has
+	// focus. Confirm is not "enter": enter is a newline in a multi-line
+	// message, and a commit message body is the normal case, not the rare one.
+	Confirm []string
+	Cancel  []string
 
 	// ToggleStaged switches the diff pane between the worktree change and
 	// the staged change.
@@ -55,8 +66,13 @@ func Default() Map {
 		// " " matches nothing at all.
 		Stage:     []string{"space"},
 		StageHunk: []string{"a"},
-		Commit:    []string{"c"},
-		Branch:    []string{"b"},
+
+		Commit: []string{"c"},
+		Amend:  []string{"C"},
+		Branch: []string{"b"},
+
+		Confirm: []string{"ctrl+s"},
+		Cancel:  []string{"esc"},
 
 		ToggleStaged: []string{"t"},
 

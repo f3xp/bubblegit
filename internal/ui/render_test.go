@@ -71,18 +71,55 @@ func (h *harness) key(k string) tea.Cmd {
 //
 // One action is several round trips — an apply reloads the status, which
 // reloads the diff — and a test that ran only the first would assert against a
-// model that has not caught up yet.
+// model that has not caught up yet. A commit fans out rather than chaining,
+// reloading HEAD and the status side by side, so the pending work is a queue
+// and a tea.Batch is unwrapped rather than delivered as a message.
 func (h *harness) run(cmd tea.Cmd) {
 	h.t.Helper()
 	if cmd == nil {
 		h.t.Fatal("the key produced no command")
 	}
-	for range 10 {
-		if cmd = h.send(cmd()); cmd == nil {
+	queue := []tea.Cmd{cmd}
+	for range 20 {
+		if len(queue) == 0 {
 			return
+		}
+		cmd, queue = queue[0], queue[1:]
+		msg := cmd()
+		// tea.Batch hands back the commands themselves rather than a message.
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		if next := h.send(msg); next != nil {
+			queue = append(queue, next)
 		}
 	}
 	h.t.Fatal("the model never settled")
+}
+
+// typeText enters a message the way the user would, one key at a time, so the
+// test exercises the same routing a real keystroke takes.
+func (h *harness) typeText(s string) {
+	h.t.Helper()
+	for _, r := range s {
+		if r == '\n' {
+			h.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+			continue
+		}
+		h.send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+}
+
+func (h *harness) esc() tea.Cmd {
+	h.t.Helper()
+	return h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
+}
+
+// confirm is the commit key, which is deliberately not enter.
+func (h *harness) confirm() tea.Cmd {
+	h.t.Helper()
+	return h.send(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 }
 
 // selectFile moves the file cursor onto path and loads its diff.
