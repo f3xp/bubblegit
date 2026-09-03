@@ -317,3 +317,32 @@ func TestCheckoutIsInertOutsideTheBranchView(t *testing.T) {
 		t.Errorf("HEAD became %q, want main", h.m.head.Branch)
 	}
 }
+
+// TestCheckoutWithTheStagedSideShowing is the one cross-view interaction the
+// switch touches. `t` leaves the diff pane on the index-vs-HEAD side, and a
+// checkout moves both HEAD and the working tree under it: the reload has to
+// come back with a diff rather than an error, on whatever the files pane
+// selects when the path it was on is not in the new branch.
+func TestCheckoutWithTheStagedSideShowing(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("staged.txt") // present on main, absent from feature
+	h.maybeRun(h.key("t"))
+	if !h.m.showStaged {
+		t.Fatal("t did not switch the diff pane to the staged side")
+	}
+
+	h.enterBranches()
+	h.selectBranch("feature")
+	h.run(h.key("b"))
+
+	h.maybeRun(h.key("1"))
+	if h.m.err != nil {
+		t.Fatalf("the frame is showing an app-wide error after the switch: %v", h.m.err)
+	}
+	if _, ok := h.m.files.Selected(); !ok {
+		t.Error("the files pane has no selection after the switch")
+	}
+	if body := ansi.Strip(h.m.Body()); strings.Contains(body, "git error") {
+		t.Errorf("the diff reload failed after the switch:\n%s", body)
+	}
+}

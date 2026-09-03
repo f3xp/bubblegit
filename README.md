@@ -119,6 +119,11 @@ go test ./internal/git -bench . # read-path benchmarks
 go test ./... -short           # skip the 100k-commit fixture
 ```
 
+`TestWorkBudget` measures each read against a process-spawn floor it re-samples per op, so
+`go test ./...` — which builds and runs packages in parallel — can trip it on whichever read
+happened to run during a busy stretch, a few milliseconds over the budget. Confirm a real
+regression with `go test ./internal/git -p 1` before believing it.
+
 Test fixtures are generated, not checked in. `testdata/fixtures/mksmall.sh` builds a repo
 covering the cases that break naive parsers — paths with spaces and non-ASCII bytes, a file
 with no trailing newline, a merge commit, and a tree that is simultaneously staged, unstaged
