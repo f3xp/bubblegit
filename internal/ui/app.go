@@ -521,6 +521,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	// One case for every mouse event, matched on the interface rather than on
+	// each concrete type: a click, a release, a drag and a wheel notch all
+	// carry the same Mouse payload, and handleMouse switches on the ones it
+	// acts on. Listing the types here instead would mean a new one silently
+	// falling through to the default.
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 	return m, nil
 }
@@ -664,6 +672,18 @@ func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, m.afterLogMove(before)
+}
+
+// afterLogMove issues the reads a moved log cursor implies. It is shared by
+// the key path and the mouse path: a click and a wheel notch move the same
+// cursor, and a copy of this bookkeeping per input device is a copy that will
+// drift.
+//
+// before is the SHA the cursor was on. Passing it in rather than reading it
+// here is what makes the check possible at all — by the time this runs the
+// cursor has already moved.
+func (m *Model) afterLogMove(before string) tea.Cmd {
 	var cmds []tea.Cmd
 	// Fetch the next page a screenful before the cursor reaches the bottom, so
 	// scrolling does not stall on a process spawn at the last row.
@@ -677,7 +697,7 @@ func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
 	if m.log.SelectedSHA() != before {
 		cmds = append(cmds, m.loadDetail())
 	}
-	return m, tea.Batch(cmds...)
+	return tea.Batch(cmds...)
 }
 
 // handleDetailKey scrolls the commit pane. It is shared by the log and branch
@@ -730,12 +750,18 @@ func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, m.afterBranchMove(before)
+}
+
+// afterBranchMove issues the tip re-read a moved branch cursor implies. Shared
+// with the mouse path, for the same reason afterLogMove is.
+func (m *Model) afterBranchMove(before string) tea.Cmd {
 	// Only when the selection actually moved: repeated j at the end of the
 	// list must not spawn a git process per keystroke.
 	if m.branches.SelectedName() == before {
-		return m, nil
+		return nil
 	}
-	return m, m.loadBranchTip()
+	return m.loadBranchTip()
 }
 
 // handleCommitKey routes to the editor, letting only its own bindings through.
@@ -817,7 +843,8 @@ func (m Model) loadHeadMessage() tea.Cmd {
 }
 
 func (m Model) handleFilesKey(k string) (tea.Model, tea.Cmd) {
-	before, _ := m.files.Selected()
+	sel, _ := m.files.Selected()
+	before := sel.Path
 
 	switch {
 	case keys.Matches(m.keys.Down, k):
@@ -840,12 +867,19 @@ func (m Model) handleFilesKey(k string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, m.afterFilesMove(before)
+}
+
+// afterFilesMove issues the diff re-read a moved file cursor implies. Shared
+// with the mouse path, for the same reason afterLogMove is.
+func (m *Model) afterFilesMove(before string) tea.Cmd {
 	// Only re-fetch when the selection actually moved; repeated j at the end
-	// of the list must not spawn a git process per keystroke.
-	if after, _ := m.files.Selected(); after.Path == before.Path {
-		return m, nil
+	// of the list must not spawn a git process per keystroke, and neither must
+	// a click on the row that is already selected.
+	if after, _ := m.files.Selected(); after.Path == before {
+		return nil
 	}
-	return m, m.loadDiff()
+	return m.loadDiff()
 }
 
 func (m Model) handleDiffKey(k string) (tea.Model, tea.Cmd) {
@@ -950,6 +984,162 @@ func wholeFileOnly(f git.FileStatus, staged bool) bool {
 	return f.Unstaged == 'D'
 }
 
+// wheelStep is how many rows one wheel notch moves. Three is what a terminal
+// scrollback does, and a notch that moved one row would need a spin per screen.
+const wheelStep = 3
+
+// handleMouse routes clicks and the wheel.
+//
+// A click takes focus and puts the pane's cursor on the row under the pointer;
+// the wheel scrolls the pane under the pointer without taking focus, which is
+// what a wheel does everywhere else. Motion and release are ignored: nothing
+// is dragged yet, and the app asks for cell motion so they only arrive at all
+// while a button is held.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// The message editor replaces both panes rather than sitting beside them,
+	// so while it is open there is nothing under the pointer to click. It owns
+	// the mouse for the same reason it owns every key.
+	if m.commit.Active() {
+		return m, nil
+	}
+
+	e := msg.Mouse()
+	hit, ok := m.hitTest(e.X, e.Y)
+	if !ok {
+		return m, nil
+	}
+
+	switch msg.(type) {
+	case tea.MouseClickMsg:
+		// Left only. The middle button pastes in most terminals and the right
+		// one opens their own menu, and taking either would be taking a
+		// gesture the user means for the terminal.
+		if e.Button != tea.MouseLeft {
+			return m, nil
+		}
+		// Focus moves even when the click landed on the pane's border or
+		// title rather than on a row: the pane is what was clicked, and a
+		// click that visibly does nothing reads as a dead frame.
+		m.focus = hit.pane
+		if hit.row < 0 {
+			return m, nil
+		}
+		return m.mouseMove(hit.pane, hit.row, true)
+
+	case tea.MouseWheelMsg:
+		switch e.Button {
+		case tea.MouseWheelUp:
+			return m.mouseMove(hit.pane, -wheelStep, false)
+		case tea.MouseWheelDown:
+			return m.mouseMove(hit.pane, wheelStep, false)
+		}
+	}
+	return m, nil
+}
+
+// mouseTarget is the shape of the panes a mouse can move: the three lists and
+// the diff. The commit pane is deliberately absent — it has no cursor, so it
+// has no row for a click to land on.
+type mouseTarget interface {
+	SelectRow(row int)
+	MoveBy(n int)
+}
+
+// mouseMove moves the cursor of the pane in slot p and issues whatever re-read
+// the move implies. n is a body row when abs is set — a click — and a number
+// of rows to travel when it is not — a wheel notch.
+//
+// One function rather than one per event, because the part that will drift is
+// the mapping from a slot to a pane: two views put the same commit pane in the
+// right-hand slot and the third puts a diff there, and that belongs in one
+// place. The re-reads go through the same after*Move helpers the key path
+// uses, so a click pages the log and reloads the detail exactly as j does.
+func (m Model) mouseMove(p focus, n int, abs bool) (tea.Model, tea.Cmd) {
+	move := func(t mouseTarget) {
+		if abs {
+			t.SelectRow(n)
+		} else {
+			t.MoveBy(n)
+		}
+	}
+
+	if p == focusRight {
+		if m.view != viewStatus {
+			// The commit pane scrolls as a document and has no cursor, so a
+			// click on one of its rows means nothing beyond the focus it has
+			// already taken.
+			if !abs {
+				m.detail.MoveBy(n)
+			}
+			return m, nil
+		}
+		move(&m.diff)
+		return m, nil
+	}
+
+	switch m.view {
+	case viewLog:
+		before := m.log.SelectedSHA()
+		move(&m.log)
+		return m, m.afterLogMove(before)
+	case viewBranches:
+		before := m.branches.SelectedName()
+		move(&m.branches)
+		return m, m.afterBranchMove(before)
+	}
+	sel, _ := m.files.Selected()
+	move(&m.files)
+	return m, m.afterFilesMove(sel.Path)
+}
+
+// mouseHit is where a mouse event landed: which pane slot, and which row of
+// that pane's body. row is -1 when the point is on the pane's chrome — its
+// border or its title — rather than on a content row.
+type mouseHit struct {
+	pane focus
+	row  int
+}
+
+// hitTest maps a terminal cell to the pane under it. ok is false for the app
+// header and for anything outside the frame.
+//
+// This is layout() read backwards, and the two have to agree: framed() draws a
+// pane as a border row, a title row, contentH() body rows and a closing border
+// row, and the left pane owns columns 0..leftW-1 with the right one taking the
+// rest. Every branch layout() has, this one has too — no border on a terminal
+// too short for one, a single full-width pane when there is no room for two —
+// which is why it is pinned by a table test rather than trusted.
+func (m Model) hitTest(x, y int) (mouseHit, bool) {
+	if !m.ready || x < 0 || x >= m.width || y < headerH || y >= m.height {
+		return mouseHit{}, false
+	}
+
+	hit := mouseHit{pane: focusLeft, row: -1}
+	paneW := m.leftW
+	switch {
+	case m.narrow:
+		// One pane fills the width, and the focused one is the one on screen.
+		hit.pane = m.focus
+	case x >= m.leftW:
+		hit.pane, paneW = focusRight, m.rightW
+		x -= m.leftW
+	}
+
+	top := headerH
+	if m.bordered() {
+		// A side border is the pane, not a row of it.
+		if x == 0 || x == paneW-1 {
+			return hit, true
+		}
+		top += 2 // the top border and the title
+	}
+	if y < top || y >= top+m.contentH() {
+		return hit, true
+	}
+	hit.row = y - top
+	return hit, true
+}
+
 // minPaneWidth keeps both panes legible rather than letting one collapse.
 const minPaneWidth = 24
 
@@ -1046,7 +1236,16 @@ func (m Model) bordered() bool { return m.bodyH >= chromeH+1 }
 func (m Model) View() tea.View {
 	v := tea.NewView(m.body())
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeAllMotion
+	// Cell motion, not all motion: the app acts on clicks, drags and the
+	// wheel, and asking for pointer movement with no button held would deliver
+	// an event per cell the mouse crosses — a full Update and re-render each,
+	// for a message the app discards. It is also the better-supported of the
+	// two modes.
+	//
+	// Either mode costs the terminal's own text selection, which the app can
+	// neither read nor replace. Most terminals still select when shift is
+	// held, which is the escape hatch this trades against.
+	v.MouseMode = tea.MouseModeCellMotion
 	// Ask for progressive keyboard enhancement where the terminal supports it,
 	// and fall back silently where it does not.
 	v.KeyboardEnhancements.ReportEventTypes = true

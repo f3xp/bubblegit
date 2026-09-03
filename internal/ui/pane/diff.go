@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/viewport"
-	tea "charm.land/bubbletea/v2"
 
 	"github.com/f3xp/bubblegit/internal/git"
 	"github.com/f3xp/bubblegit/internal/highlight"
@@ -45,7 +44,6 @@ func NewDiff() Diff {
 	// desynchronises the visual line count from the real one, which makes
 	// line-level staging in M2 point at the wrong line.
 	vp.SoftWrap = false
-	vp.MouseWheelEnabled = true
 	return Diff{vp: vp, empty: "no file selected"}
 }
 
@@ -138,12 +136,6 @@ func (d *Diff) Selection() (fd git.FileDiff, hunk, line int, ok bool) {
 	return d.fd, r.hunk, r.line, true
 }
 
-func (d *Diff) Update(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
-	d.vp, cmd = d.vp.Update(msg)
-	return cmd
-}
-
 // MoveBy moves the cursor, scrolling only as far as it takes to keep it on
 // screen. The viewport's own scroll methods are not used for navigation: the
 // cursor is what staging acts on, so a view that can scroll away from it would
@@ -151,6 +143,20 @@ func (d *Diff) Update(msg tea.Msg) tea.Cmd {
 func (d *Diff) MoveBy(n int) {
 	d.cursor += n
 	d.clampCursor()
+}
+
+// SelectRow puts the cursor on a visible row, counted from the top of the
+// pane: a click reports where on screen it landed, and the diff may be
+// scrolled under it. A row past the end of the diff is ignored rather than
+// clamped, so clicking the blank space below a short diff selects nothing.
+func (d *Diff) SelectRow(row int) {
+	if row < 0 || row >= d.vp.Height() {
+		return
+	}
+	if i := d.vp.YOffset() + row; i < len(d.rows) {
+		d.cursor = i
+		d.clampCursor()
+	}
 }
 
 func (d *Diff) HalfPageDown() { d.MoveBy(d.halfPage()) }

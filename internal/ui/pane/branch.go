@@ -76,8 +76,17 @@ func (b *Branches) SelectedName() string {
 
 func (b *Branches) MoveBy(delta int) { b.cursor += delta; b.clampCursor() }
 func (b *Branches) MoveTo(i int)     { b.cursor = i; b.clampCursor() }
-func (b *Branches) Top()             { b.MoveTo(0) }
-func (b *Branches) Bottom()          { b.MoveTo(len(b.branches) - 1) }
+
+// SelectRow puts the cursor on a visible row. See Files.SelectRow for why the
+// row is counted from the top of the pane and why one past the end is ignored.
+func (b *Branches) SelectRow(row int) {
+	if row < 0 || row >= b.height || b.offset+row >= len(b.branches) {
+		return
+	}
+	b.MoveTo(b.offset + row)
+}
+func (b *Branches) Top()    { b.MoveTo(0) }
+func (b *Branches) Bottom() { b.MoveTo(len(b.branches) - 1) }
 
 func (b *Branches) HalfPageDown() { b.MoveBy(b.halfPage()) }
 func (b *Branches) HalfPageUp()   { b.MoveBy(-b.halfPage()) }

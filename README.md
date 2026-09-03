@@ -110,6 +110,20 @@ that by guessing.
 
 Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
 
+The mouse works wherever a pointer is unambiguous. A left click focuses the pane it lands on
+and puts that pane's cursor on the row under it — in the diff that is the line `space` then
+stages. The wheel scrolls the pane under the pointer without moving focus, which is what a
+wheel does everywhere else, and it moves the cursor rather than a scroll offset: the cursor is
+what the staging keys act on, so a pane that could scroll away from it would stage a line that
+is no longer on screen. Clicking the empty space below a list selects nothing, and the middle
+and right buttons are left to the terminal, which uses them for paste and for its own menu.
+
+Cell motion is requested, not all motion. The app acts on clicks and the wheel, and asking for
+pointer movement with no button held delivers an event per cell the mouse crosses — a full
+update and re-render each, for a message that is then discarded. Either mode costs the
+terminal's own text selection, which the app can neither read nor replace; most terminals
+still select while shift is held, and that is the escape hatch this trades against.
+
 ## Development
 
 ```sh

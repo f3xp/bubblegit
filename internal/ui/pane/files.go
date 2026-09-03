@@ -59,6 +59,20 @@ func (f *Files) MoveBy(delta int) {
 
 func (f *Files) MoveTo(i int) { f.cursor = i; f.clampCursor() }
 
+// SelectRow puts the cursor on a visible row, counted from the top of the
+// pane rather than from the top of the list: a click reports where on screen
+// it landed, and the list may be scrolled under it.
+//
+// A row past the end of the list is ignored rather than clamped to the last
+// one. Clicking the empty space below a two-file list is not a request to
+// select the second file.
+func (f *Files) SelectRow(row int) {
+	if row < 0 || row >= f.height || f.offset+row >= len(f.files) {
+		return
+	}
+	f.MoveTo(f.offset + row)
+}
+
 func (f *Files) Top()    { f.MoveTo(0) }
 func (f *Files) Bottom() { f.MoveTo(len(f.files) - 1) }
 

@@ -134,7 +134,17 @@ func (l *Log) pageMargin() int {
 
 func (l *Log) MoveBy(delta int) { l.cursor += delta; l.clampCursor() }
 func (l *Log) MoveTo(i int)     { l.cursor = i; l.clampCursor() }
-func (l *Log) Top()             { l.MoveTo(0) }
+
+// SelectRow puts the cursor on a visible row. See Files.SelectRow for why the
+// row is counted from the top of the pane and why one past the end is ignored.
+func (l *Log) SelectRow(row int) {
+	if row < 0 || row >= l.height || l.offset+row >= len(l.commits) {
+		return
+	}
+	l.MoveTo(l.offset + row)
+}
+
+func (l *Log) Top() { l.MoveTo(0) }
 
 // Bottom is the deepest commit loaded, not the root: the rest is a page that
 // has not been read yet.

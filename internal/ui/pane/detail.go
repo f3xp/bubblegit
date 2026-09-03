@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/viewport"
-	tea "charm.land/bubbletea/v2"
 
 	"github.com/f3xp/bubblegit/internal/git"
 	"github.com/f3xp/bubblegit/internal/ui/theme"
@@ -29,7 +28,6 @@ func NewDetail() Detail {
 	// Same reason as the diff pane: a wrapped line desynchronises the rendered
 	// line count from the real one, and the two panes have to scroll alike.
 	vp.SoftWrap = false
-	vp.MouseWheelEnabled = true
 	return Detail{vp: vp, empty: "no commit selected"}
 }
 
@@ -91,16 +89,13 @@ func (d *Detail) SetDetail(det git.Detail) {
 	d.clampOffset()
 }
 
-func (d *Detail) Update(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
-	d.vp, cmd = d.vp.Update(msg)
-	return cmd
-}
-
 func (d *Detail) MoveBy(n int) {
 	d.vp.SetYOffset(d.vp.YOffset() + n)
 	d.clampOffset()
 }
+
+// Offset is the first visible row, counted from the top of the document.
+func (d *Detail) Offset() int { return d.vp.YOffset() }
 
 func (d *Detail) HalfPageDown() { d.MoveBy(d.halfPage()) }
 func (d *Detail) HalfPageUp()   { d.MoveBy(-d.halfPage()) }
