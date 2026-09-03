@@ -225,3 +225,60 @@ func TestBranchesIsOneRead(t *testing.T) {
 			"from %%(upstream:track), not a rev-list per branch", n)
 	}
 }
+
+// TestCheckoutSwitchesBranch: the switch moves HEAD, and the next read marks
+// the new branch as the current one.
+func TestCheckoutSwitchesBranch(t *testing.T) {
+	dir := gittest.Small(t)
+
+	// The fixture leaves main.go untracked but present on disk, and every
+	// branch here has it committed, so a switch would overwrite it — see
+	// TestCheckoutReportsGitsRefusal, which is that case on purpose.
+	if err := os.Remove(filepath.Join(dir, "main.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := git.New(dir)
+	if err := git.Checkout(context.Background(), r, "feature"); err != nil {
+		t.Fatalf("switching to feature: %v", err)
+	}
+
+	head, err := git.ReadHead(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Branch != "feature" || head.Detached {
+		t.Errorf("HEAD is %+v, want the feature branch", head)
+	}
+	if got := branchesByName(t, dir); !got["feature"].Current || got["main"].Current {
+		t.Error("the branch list still marks main as current after the switch")
+	}
+}
+
+// TestCheckoutReportsGitsRefusal: nothing is pre-empted in Go. Both a switch
+// that would lose work and a name that is not a branch come back carrying
+// git's own message, which is what the pane shows the user.
+func TestCheckoutReportsGitsRefusal(t *testing.T) {
+	r := git.New(gittest.Small(t))
+
+	// The fixture leaves plain.txt modified in the working tree, and `behind`
+	// sits on a commit where that file has different content, so the switch
+	// would throw the edit away. This is the case a Go-side guard would have
+	// had to duplicate — and would have got wrong, since a switch to
+	// `feature`, where the file is identical, is allowed.
+	err := git.Checkout(context.Background(), r, "behind")
+	if err == nil {
+		t.Fatal("a switch that would overwrite a local change was allowed")
+	}
+	if !strings.Contains(err.Error(), "plain.txt") {
+		t.Errorf("the error does not name the file at risk: %v", err)
+	}
+
+	err = git.Checkout(context.Background(), r, "no-such-branch")
+	if err == nil {
+		t.Fatal("switching to a branch that does not exist succeeded")
+	}
+	if !strings.Contains(err.Error(), "no-such-branch") {
+		t.Errorf("the error does not name the branch asked for: %v", err)
+	}
+}

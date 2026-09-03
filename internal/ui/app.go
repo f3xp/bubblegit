@@ -109,6 +109,11 @@ type logMsg struct {
 	err     error
 }
 
+// checkoutMsg reports that a switch finished. Like stagedMsg it carries no
+// payload: HEAD moved and the working tree was rewritten under it, so
+// everything derived from either has to be re-read.
+type checkoutMsg struct{ err error }
+
 // branchesMsg carries the whole branch list. There is no paging: the count is
 // bounded by how many branches a person keeps, not by the size of the history,
 // and one read answers ahead/behind for all of them.
@@ -392,6 +397,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.loadStatus()
+
+	case checkoutMsg:
+		m.applying = false
+		if msg.err != nil {
+			// Shown, not swallowed: git refuses a switch that would overwrite
+			// a local change, and a key that silently does nothing is
+			// indistinguishable from a broken one.
+			m.detail.SetError(msg.err)
+			return m, nil
+		}
+		// HEAD, the working tree and every tracking count moved at once. The
+		// branch list is on screen so it is re-read now rather than marked
+		// stale; the log is not, so it is only marked.
+		m.logLoaded = false
+		return m, tea.Batch(m.loadHead(), m.loadStatus(), m.loadBranches())
 
 	case commitMsg:
 		m.applying = false
@@ -682,9 +702,9 @@ func (m Model) handleDetailKey(k string) (tea.Model, tea.Cmd) {
 
 // handleBranchKey routes the branch view.
 //
-// Nothing here writes yet: the list is read-only, so the staging and commit
-// bindings are absent for the same reason they are absent from the log view —
-// there is nothing in this view for them to mean.
+// Checking out is the one write here. The staging and commit bindings are
+// absent for the same reason they are absent from the log view: there is
+// nothing in this view for them to mean.
 func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
 	if m.focus == focusRight {
 		return m.handleDetailKey(k)
@@ -692,6 +712,8 @@ func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
 
 	before := m.branches.SelectedName()
 	switch {
+	case keys.Matches(m.keys.Branch, k):
+		return m, m.doCheckout()
 	case keys.Matches(m.keys.Down, k):
 		m.branches.MoveBy(1)
 	case keys.Matches(m.keys.Up, k):
@@ -755,6 +777,31 @@ func (m *Model) doCommit() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		return commitMsg{err: git.CreateCommit(ctx, repo, msg, amend)}
+	}
+}
+
+// doCheckout switches to the branch under the cursor.
+//
+// There is no confirmation step. A switch is reversible, and the one way it
+// loses work — overwriting a local change — is the case git refuses on its
+// own, reporting it as an error the pane shows.
+func (m *Model) doCheckout() tea.Cmd {
+	sel, ok := m.branches.Selected()
+	if !ok || m.applying {
+		return nil
+	}
+	if sel.Current {
+		// git would exit 0 with "Already on ...", spending a process to
+		// rewrite the pane with what it already says.
+		return nil
+	}
+
+	m.applying = true
+	repo, name := m.repo, sel.Name
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		return checkoutMsg{err: git.Checkout(ctx, repo, name)}
 	}
 }
 

@@ -4,9 +4,9 @@ A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), 
 fast on large repositories and more interactive than the alternatives.
 
 > **Status: early.** Milestone 5 is complete — a working-tree view with syntax-highlighted
-> diffs, staging by file, by hunk and by line, and commit and amend, plus a log view with a
-> commit graph and a commit detail pane, and a read-only branch view. Nothing checks out a
-> branch yet.
+> diffs, staging by file, by hunk and by line, and commit and amend, a log view with a commit
+> graph and a commit detail pane, and a branch view that lists the local branches and checks
+> one out.
 
 ## Why shell out to `git`
 
@@ -94,9 +94,19 @@ subject onto one line — both pinned by tests, since the parser breaks quietly 
 stops holding.
 
 Only local branches are listed. A remote-tracking ref is not a branch you can be on, and
-listing every one of them turns the pane into a directory of the remote. Like the log view,
-nothing here writes: `b` is reserved for checking out the branch under the cursor and is
-routed nowhere yet.
+listing every one of them turns the pane into a directory of the remote.
+
+`b` checks out the branch under the cursor — the one write in this view, and the one key that
+means nothing in the other two, where there is no branch under a cursor. There is no
+confirmation step: a switch is reversible, and the one way it loses work is the case git
+refuses on its own. Nothing is pre-empted in Go, because the guard would have to be wrong in
+one direction or the other — carrying an uncommitted edit to a branch where the file is
+identical is routine and allowed, and the same edit refuses on a branch where it is not.
+When git refuses, the pane shows what it said.
+
+It runs `git switch`, not `git checkout`: the old command also restores files, so
+`git checkout <name>` is ambiguous when a path shares a name with a branch, and it resolves
+that by guessing.
 
 Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
 
@@ -131,7 +141,7 @@ SHAs are byte-identical across runs and machines. Golden files depend on that.
 | M2 | ✅ staging by file, hunk and line |
 | M3 | ✅ commit and amend |
 | M4 | ✅ Log pane, commit detail, commit graph |
-| M5 | ✅ Branch pane (read-only; checkout still to come) |
+| M5 | ✅ Branch pane, checkout |
 | M6 | Performance pass, mouse, resizable splitter |
 
 ## License

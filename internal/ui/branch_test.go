@@ -232,3 +232,88 @@ func TestBranchViewRenders(t *testing.T) {
 	h.enterBranches()
 	teatest.RequireEqualOutput(t, []byte(h.m.Body()))
 }
+
+// TestCheckoutSwitchesBranch: `b` moves HEAD, and everything derived from it
+// is re-read — the header, the branch list's current marker, and the log,
+// which is marked stale rather than re-read behind the user's back.
+func TestCheckoutSwitchesBranch(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog() // so there is a loaded log for the switch to invalidate
+	h.enterBranches()
+	h.selectBranch("feature")
+
+	h.run(h.key("b"))
+
+	if h.m.head.Branch != "feature" {
+		t.Errorf("the header reads %q, want feature", h.m.head.Branch)
+	}
+	sel, _ := h.m.branches.Selected()
+	if sel.Name != "feature" || !sel.Current {
+		t.Errorf("the list marks %+v, want feature as the current branch", sel)
+	}
+	if h.m.logLoaded {
+		t.Error("the log was left marked as loaded after HEAD moved")
+	}
+	if h.m.applying {
+		t.Error("the write flag was left held after the switch finished")
+	}
+	if !strings.Contains(ansi.Strip(h.m.Body()), "* feature") {
+		t.Errorf("the marker did not move to feature:\n%s", ansi.Strip(h.m.Body()))
+	}
+}
+
+// TestCheckoutShowsGitsRefusal: git refuses a switch that would throw away a
+// local change, and the user has to see why. `behind` sits on a commit where
+// the fixture's modified plain.txt has different content.
+func TestCheckoutShowsGitsRefusal(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("behind")
+
+	h.run(h.key("b"))
+
+	if h.m.head.Branch != "main" {
+		t.Errorf("HEAD moved to %q despite the refusal", h.m.head.Branch)
+	}
+	if h.m.applying {
+		t.Error("the write flag was left held after the switch failed")
+	}
+	body := ansi.Strip(h.m.Body())
+	if !strings.Contains(body, "plain.txt") {
+		t.Errorf("the pane does not say why the switch was refused:\n%s", body)
+	}
+}
+
+// TestCheckoutIsInertOnTheCurrentBranch: git would exit 0 with "Already on
+// ...", spending a process to redraw what the pane already says.
+func TestCheckoutIsInertOnTheCurrentBranch(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("main")
+
+	if cmd := h.key("b"); cmd != nil {
+		t.Error("checking out the branch already checked out spawned git")
+	}
+}
+
+// TestCheckoutIsInertOutsideTheBranchView: `b` is the branch view's key. In
+// the status and log views there is no branch under a cursor, and switching
+// away from what is on screen there would be a write with nothing to explain
+// it.
+func TestCheckoutIsInertOutsideTheBranchView(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("feature")
+
+	h.maybeRun(h.key("1"))
+	if cmd := h.key("b"); cmd != nil {
+		t.Error("b checked out a branch from the status view")
+	}
+	h.enterLog()
+	if cmd := h.key("b"); cmd != nil {
+		t.Error("b checked out a branch from the log view")
+	}
+	if h.m.head.Branch != "main" {
+		t.Errorf("HEAD became %q, want main", h.m.head.Branch)
+	}
+}

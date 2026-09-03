@@ -136,3 +136,22 @@ func parseTrack(s string) (ahead, behind int, gone bool) {
 	}
 	return ahead, behind, false
 }
+
+// Checkout switches the working tree to a branch.
+//
+// `switch`, not `checkout`: the old command also restores files, so
+// `git checkout <name>` is ambiguous when a path shares a name with a branch,
+// and its way of resolving that is to guess. `switch` only ever moves HEAD.
+//
+// Nothing is guarded here that git already refuses clearly. Local changes that
+// the switch would overwrite, a name that is not a branch, and an unborn HEAD
+// all come back as an Error carrying git's own stderr, which is what the UI
+// shows. Guessing at any of them here would mean either refusing switches git
+// would have allowed — carrying an uncommitted edit across branches is
+// routine — or reimplementing the check git is about to do anyway.
+func Checkout(ctx context.Context, r *Runner, branch string) error {
+	// -- ends the option list. A branch may legitimately be named "-f", and
+	// `switch` would read it as a flag.
+	_, err := r.Run(ctx, "switch", "--", branch)
+	return err
+}

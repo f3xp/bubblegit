@@ -32,10 +32,9 @@ type Map struct {
 	Commit []string
 	Amend  []string
 
-	// Branch is reserved for checking out the branch under the cursor, the one
-	// write the branch view will have. It is bound but routed nowhere while
-	// that view is read-only: an unroutable key is dead, and a key that
-	// silently checks out a branch would be worse.
+	// Branch checks out the branch under the cursor. It is the branch view's
+	// one write, and it is bound nowhere else: in the status and log views
+	// there is no branch under a cursor for it to mean.
 	Branch []string
 
 	// Confirm and Cancel only mean anything while the message editor has
