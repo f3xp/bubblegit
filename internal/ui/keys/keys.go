@@ -31,6 +31,11 @@ type Map struct {
 	// already a mode, and a mode inside a mode is one too many.
 	Commit []string
 	Amend  []string
+
+	// Branch is reserved for checking out the branch under the cursor, the one
+	// write the branch view will have. It is bound but routed nowhere while
+	// that view is read-only: an unroutable key is dead, and a key that
+	// silently checks out a branch would be worse.
 	Branch []string
 
 	// Confirm and Cancel only mean anything while the message editor has
@@ -43,13 +48,14 @@ type Map struct {
 	// the staged change.
 	ToggleStaged []string
 
-	// StatusView and LogView switch which pair of panes is on screen. They are
-	// views rather than more panes because the layout splits the terminal in
-	// two, and a third simultaneous pane on an 80-column terminal is three
-	// unreadable slivers. Numbered rather than mnemonic so M5's branch view
-	// extends the row instead of re-teaching the two that came before it.
+	// StatusView, LogView and BranchView switch which pair of panes is on
+	// screen. They are views rather than more panes because the layout splits
+	// the terminal in two, and a third simultaneous pane on an 80-column
+	// terminal is three unreadable slivers. Numbered rather than mnemonic so
+	// each new view extends the row instead of re-teaching the ones before it.
 	StatusView []string
 	LogView    []string
+	BranchView []string
 
 	Help []string
 	Quit []string
@@ -86,6 +92,7 @@ func Default() Map {
 
 		StatusView: []string{"1"},
 		LogView:    []string{"2"},
+		BranchView: []string{"3"},
 
 		Help: []string{"?"},
 		Quit: []string{"q", "ctrl+c"},

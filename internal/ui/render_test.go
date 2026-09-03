@@ -312,7 +312,7 @@ func TestLayoutFitsTerminal(t *testing.T) {
 	}
 	// Both views, because each splits the terminal by a different fraction and
 	// the clamps have to hold for either one.
-	views := map[string]view{"status": viewStatus, "log": viewLog}
+	views := map[string]view{"status": viewStatus, "log": viewLog, "branches": viewBranches}
 
 	for _, sz := range sizes {
 		for name, v := range views {
@@ -330,6 +330,12 @@ func TestLayoutFitsTerminal(t *testing.T) {
 						Subject: "a subject long enough to need truncating somewhere"},
 					{SHA: strings.Repeat("b", 40), Short: "bbbbbbb",
 						Subject: "ünïcødé-ファイル in a commit subject"},
+				})
+				m.branches.SetBranches([]git.Branch{
+					{Name: "a-fairly-long-branch-name/with-a-slash", Current: true,
+						Upstream: "origin/main", Ahead: 12, Behind: 3,
+						Subject: "a subject long enough to need truncating somewhere"},
+					{Name: "ünïcødé-ブランチ", Subject: "ünïcødé-ファイル in a commit subject"},
 				})
 
 				lines := strings.Split(m.Body(), "\n")

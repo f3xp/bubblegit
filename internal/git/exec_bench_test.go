@@ -67,13 +67,14 @@ var ops = []struct {
 		},
 	},
 	{
-		// M5's read path, measured before the branch pane exists so the design
-		// is settled against a number rather than a hope.
-		name: "Refs",
+		// The branch pane's read. %(upstream:track) makes git compute
+		// ahead/behind inside this one call; the obvious alternative costs a
+		// `rev-list --count` process per branch, which is what this budget is
+		// here to catch if anyone reaches for it.
+		name: "Branches",
 		run: func(ctx context.Context, r *git.Runner) (int, error) {
-			out, err := r.Run(ctx, "for-each-ref",
-				"--format=%(refname)%00%(objectname)%00%(upstream:short)")
-			return len(out), err
+			b, err := git.Branches(ctx, r)
+			return len(b), err
 		},
 	},
 }

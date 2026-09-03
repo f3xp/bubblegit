@@ -29,13 +29,14 @@ import (
 // commit its own budget when that shows up, not before.
 const gitTimeout = 30 * time.Second
 
-// filesPaneWidth and logPaneWidth are the fraction of the terminal given to
-// the left pane in each view. The log takes more: a row there carries a graph,
-// a SHA, a date and a subject where a file row carries a status code and a
-// path.
+// The fraction of the terminal given to the left pane in each view. The files
+// pane takes the least: a row there carries a status code and a path, where a
+// log row carries a graph, a SHA, a date and a subject, and a branch row a
+// name, a tracking count, a date and a subject.
 const (
-	filesPaneWidth = 0.34
-	logPaneWidth   = 0.5
+	filesPaneWidth  = 0.34
+	logPaneWidth    = 0.5
+	branchPaneWidth = 0.5
 )
 
 var errEmptyMessage = errors.New("empty commit message")
@@ -59,6 +60,7 @@ type view int
 const (
 	viewStatus view = iota
 	viewLog
+	viewBranches
 )
 
 type headMsg struct {
@@ -107,6 +109,14 @@ type logMsg struct {
 	err     error
 }
 
+// branchesMsg carries the whole branch list. There is no paging: the count is
+// bounded by how many branches a person keeps, not by the size of the history,
+// and one read answers ahead/behind for all of them.
+type branchesMsg struct {
+	branches []git.Branch
+	err      error
+}
+
 // detailMsg carries one commit's patch, generation-tagged for the same reason
 // diffMsg is.
 type detailMsg struct {
@@ -123,11 +133,12 @@ type Model struct {
 	head git.Head
 	err  error
 
-	files  pane.Files
-	diff   pane.Diff
-	commit pane.Commit
-	log    pane.Log
-	detail pane.Detail
+	files    pane.Files
+	diff     pane.Diff
+	commit   pane.Commit
+	log      pane.Log
+	detail   pane.Detail
+	branches pane.Branches
 
 	focus focus
 	view  view
@@ -159,6 +170,11 @@ type Model struct {
 	// logLoaded is false until the log view has been opened. The log is not
 	// read at startup: nothing shows it yet and it costs a process spawn.
 	logLoaded bool
+
+	// branchesLoaded is logLoaded's counterpart, and is cleared for the same
+	// reasons: a commit moves the current branch's tip and its ahead count, so
+	// the list on screen describes a branch that has moved on.
+	branchesLoaded bool
 
 	width, height int
 	// Pane dimensions computed by layout. A lipgloss border sizes itself to
@@ -282,6 +298,17 @@ func (m *Model) loadMoreLog() tea.Cmd {
 	}
 }
 
+// loadBranches reads the whole branch list.
+func (m *Model) loadBranches() tea.Cmd {
+	repo := m.repo
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		b, err := git.Branches(ctx, repo)
+		return branchesMsg{branches: b, err: err}
+	}
+}
+
 // loadDetail requests the patch for the commit under the log cursor.
 func (m *Model) loadDetail() tea.Cmd {
 	c, ok := m.log.Selected()
@@ -289,9 +316,24 @@ func (m *Model) loadDetail() tea.Cmd {
 		m.detail.SetEmpty("no commit selected")
 		return nil
 	}
+	return m.loadDetailFor(c.SHA)
+}
 
+// loadBranchTip requests the patch for the tip of the selected branch. The
+// detail pane is shared with the log view, which is why every entry into
+// either view re-issues its own load — see setView.
+func (m *Model) loadBranchTip() tea.Cmd {
+	b, ok := m.branches.Selected()
+	if !ok {
+		m.detail.SetEmpty("no branch selected")
+		return nil
+	}
+	return m.loadDetailFor(b.SHA)
+}
+
+func (m *Model) loadDetailFor(sha string) tea.Cmd {
 	m.detailGen++
-	gen, repo, sha := m.detailGen, m.repo, c.SHA
+	gen, repo := m.detailGen, m.repo
 	m.detail.SetLoading(sha)
 
 	return func() tea.Msg {
@@ -363,10 +405,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.commit.Close()
 		m.layout()
-		// HEAD moved, so the log is stale. It is not re-read here: the log
-		// view is not on screen (committing from it is refused), and reading
-		// it now would spend a process on a pane nobody is looking at.
-		m.logLoaded = false
+		// HEAD moved, so the log and the branch list are both stale — the
+		// current branch has a new tip and one more commit ahead of its
+		// upstream. Neither is re-read here: committing is only possible from
+		// the status view, so neither pane is on screen, and reading now would
+		// spend a process on a pane nobody is looking at.
+		m.logLoaded, m.branchesLoaded = false, false
 		return m, tea.Batch(m.loadHead(), m.loadStatus())
 
 	case amendMsg:
@@ -413,6 +457,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.loadDetail()
+
+	case branchesMsg:
+		if msg.err != nil {
+			// Shown in the detail pane rather than as the app-wide error, for
+			// the same reason a failed log read is: the app-wide error
+			// replaces the whole frame, and no key clears it, so a failed
+			// branch read would leave no way back to the working tree.
+			m.detail.SetError(msg.err)
+			// Leave branchesLoaded false so re-entering the view retries.
+			return m, nil
+		}
+		m.branchesLoaded = true
+		m.branches.SetBranches(msg.branches)
+		if m.view != viewBranches {
+			// The list arrived for a view the user has already left. Keep it —
+			// it is current — but do not pull the detail pane out from under
+			// whatever is on screen now.
+			return m, nil
+		}
+		return m, m.loadBranchTip()
 
 	case detailMsg:
 		if msg.gen != m.detailGen {
@@ -462,6 +526,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case keys.Matches(m.keys.LogView, k):
 		return m.setView(viewLog)
 
+	case keys.Matches(m.keys.BranchView, k):
+		return m.setView(viewBranches)
+
 	// Everything from here to the pane switch acts on the index or on HEAD,
 	// which only means something while the status view is the one on screen.
 	// Without the guard `space` in the log pane stages whatever the invisible
@@ -504,8 +571,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.view == viewLog {
+	switch m.view {
+	case viewLog:
 		return m.handleLogKey(k)
+	case viewBranches:
+		return m.handleBranchKey(k)
 	}
 	if m.focus == focusRight {
 		return m.handleDiffKey(k)
@@ -526,8 +596,23 @@ func (m Model) setView(v view) (tea.Model, tea.Cmd) {
 	}
 	m.view, m.focus = v, focusLeft
 	m.layout()
-	if v == viewLog && !m.logLoaded {
-		return m, m.loadLog()
+
+	// The log and branch views share one detail pane, so entering either has
+	// to re-issue its own load even when the list is already there: without
+	// it, coming back to the log shows the branch tip it was left holding
+	// while the log cursor sits somewhere else entirely. It costs one process
+	// on a keypress, not one per keystroke.
+	switch v {
+	case viewLog:
+		if !m.logLoaded {
+			return m, m.loadLog()
+		}
+		return m, m.loadDetail()
+	case viewBranches:
+		if !m.branchesLoaded {
+			return m, m.loadBranches()
+		}
+		return m, m.loadBranchTip()
 	}
 	return m, nil
 }
@@ -538,21 +623,7 @@ func (m Model) setView(v view) (tea.Model, tea.Cmd) {
 // nothing in this view is stageable, so there is no key for it to mean.
 func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
 	if m.focus == focusRight {
-		switch {
-		case keys.Matches(m.keys.Down, k):
-			m.detail.MoveBy(1)
-		case keys.Matches(m.keys.Up, k):
-			m.detail.MoveBy(-1)
-		case keys.Matches(m.keys.PageDown, k):
-			m.detail.HalfPageDown()
-		case keys.Matches(m.keys.PageUp, k):
-			m.detail.HalfPageUp()
-		case keys.Matches(m.keys.Top, k):
-			m.detail.Top()
-		case keys.Matches(m.keys.Bottom, k):
-			m.detail.Bottom()
-		}
-		return m, nil
+		return m.handleDetailKey(k)
 	}
 
 	before := m.log.SelectedSHA()
@@ -587,6 +658,62 @@ func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.loadDetail())
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// handleDetailKey scrolls the commit pane. It is shared by the log and branch
+// views, which put the same pane in the same slot.
+func (m Model) handleDetailKey(k string) (tea.Model, tea.Cmd) {
+	switch {
+	case keys.Matches(m.keys.Down, k):
+		m.detail.MoveBy(1)
+	case keys.Matches(m.keys.Up, k):
+		m.detail.MoveBy(-1)
+	case keys.Matches(m.keys.PageDown, k):
+		m.detail.HalfPageDown()
+	case keys.Matches(m.keys.PageUp, k):
+		m.detail.HalfPageUp()
+	case keys.Matches(m.keys.Top, k):
+		m.detail.Top()
+	case keys.Matches(m.keys.Bottom, k):
+		m.detail.Bottom()
+	}
+	return m, nil
+}
+
+// handleBranchKey routes the branch view.
+//
+// Nothing here writes yet: the list is read-only, so the staging and commit
+// bindings are absent for the same reason they are absent from the log view —
+// there is nothing in this view for them to mean.
+func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
+	if m.focus == focusRight {
+		return m.handleDetailKey(k)
+	}
+
+	before := m.branches.SelectedName()
+	switch {
+	case keys.Matches(m.keys.Down, k):
+		m.branches.MoveBy(1)
+	case keys.Matches(m.keys.Up, k):
+		m.branches.MoveBy(-1)
+	case keys.Matches(m.keys.Bottom, k):
+		m.branches.Bottom()
+	case keys.Matches(m.keys.Top, k):
+		m.branches.Top()
+	case keys.Matches(m.keys.PageDown, k):
+		m.branches.HalfPageDown()
+	case keys.Matches(m.keys.PageUp, k):
+		m.branches.HalfPageUp()
+	default:
+		return m, nil
+	}
+
+	// Only when the selection actually moved: repeated j at the end of the
+	// list must not spawn a git process per keystroke.
+	if m.branches.SelectedName() == before {
+		return m, nil
+	}
+	return m, m.loadBranchTip()
 }
 
 // handleCommitKey routes to the editor, letting only its own bindings through.
@@ -822,6 +949,7 @@ func (m *Model) layout() {
 	m.files.SetSize(m.contentW(m.leftW), m.contentH())
 	m.diff.SetSize(m.contentW(m.rightW), m.contentH())
 	m.log.SetSize(m.contentW(m.leftW), m.contentH())
+	m.branches.SetSize(m.contentW(m.leftW), m.contentH())
 	m.detail.SetSize(m.contentW(m.rightW), m.contentH())
 	// The editor replaces both panes rather than sitting beside them, so it is
 	// the one thing here sized against the full width.
@@ -830,8 +958,11 @@ func (m *Model) layout() {
 
 // paneSplit is the fraction of the terminal the left pane gets in this view.
 func (m Model) paneSplit() float64 {
-	if m.view == viewLog {
+	switch m.view {
+	case viewLog:
 		return logPaneWidth
+	case viewBranches:
+		return branchPaneWidth
 	}
 	return filesPaneWidth
 }
@@ -916,6 +1047,12 @@ func (m Model) body() string {
 // leftTitle and rightTitle name whichever pane the current view puts in each
 // slot, so body() does not have to know which view it is drawing.
 func (m Model) leftTitle() string {
+	if m.view == viewBranches {
+		if n := m.branches.Len(); n > 0 {
+			return "Branches (" + strconv.Itoa(n) + ")"
+		}
+		return "Branches"
+	}
 	if m.view == viewLog {
 		if n := m.log.Len(); n > 0 {
 			// A trailing + means the count is what has been read so far, not
@@ -935,7 +1072,8 @@ func (m Model) leftTitle() string {
 }
 
 func (m Model) rightTitle() string {
-	if m.view == viewLog {
+	// The log and branch views share the commit pane, so they share its title.
+	if m.view != viewStatus {
 		if sha := m.detail.Title(); sha != "" {
 			return "Commit — " + sha
 		}
@@ -945,14 +1083,17 @@ func (m Model) rightTitle() string {
 }
 
 func (m Model) leftView() string {
-	if m.view == viewLog {
+	switch m.view {
+	case viewLog:
 		return m.log.View()
+	case viewBranches:
+		return m.branches.View()
 	}
 	return m.files.View()
 }
 
 func (m Model) rightView() string {
-	if m.view == viewLog {
+	if m.view != viewStatus {
 		return m.detail.View()
 	}
 	return m.diff.View()

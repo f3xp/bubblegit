@@ -3,9 +3,10 @@
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), aiming to be
 fast on large repositories and more interactive than the alternatives.
 
-> **Status: early.** Milestone 4 is complete — a working-tree view with syntax-highlighted
+> **Status: early.** Milestone 5 is complete — a working-tree view with syntax-highlighted
 > diffs, staging by file, by hunk and by line, and commit and amend, plus a log view with a
-> commit graph and a commit detail pane. There is no branch pane yet.
+> commit graph and a commit detail pane, and a read-only branch view. Nothing checks out a
+> branch yet.
 
 ## Why shell out to `git`
 
@@ -38,8 +39,9 @@ costs two processes for what `git show --format=…` answers in one.
 go run ./cmd/bubblegit    # from anywhere inside a git repository
 ```
 
-`1` shows the working tree, `2` shows the log. Each is a pair of panes rather than a pane of
-its own: two is what an 80-column terminal has room for, and a third would be three slivers.
+`1` shows the working tree, `2` shows the log, `3` shows the branches. Each is a pair of panes
+rather than a pane of its own: two is what an 80-column terminal has room for, and a third
+would be three slivers.
 
 `j`/`k` move, `g`/`G` jump to the ends, `ctrl+d`/`ctrl+u` half-page, `tab` switches pane,
 `t` toggles the diff between the worktree and staged sides, `q` or `ctrl+c` quits.
@@ -77,6 +79,25 @@ the bottom. Paging resumes from the parents it has not read yet, not from the la
 screen: `git log <sha>` walks only that commit's ancestors, so on any history with a merge the
 obvious cursor drops the side branch entirely and no later page ever picks it up.
 
+In the branch view (`3`) the left pane lists the local branches and the right pane shows the
+tip commit of the selected one. Each row carries how far the branch has drifted from its
+upstream — `↑2`, `↓1`, `↑2↓1`, a dim `=` when it matches, `gone` when the upstream ref has
+been deleted, and nothing at all when the branch tracks nothing, which is a different fact
+from being in sync. All of it comes from one `git for-each-ref`: `%(upstream:track)` has git
+count ahead and behind itself, where the obvious alternative spends a `rev-list` process per
+branch.
+
+The view opens on the branch you are on rather than on the first one alphabetically, and
+`git for-each-ref` has no `-z`, so this is the one read whose records are newline-delimited.
+That is safe because git refuses a ref name containing a newline and folds a multi-line
+subject onto one line — both pinned by tests, since the parser breaks quietly if either
+stops holding.
+
+Only local branches are listed. A remote-tracking ref is not a branch you can be on, and
+listing every one of them turns the pane into a directory of the remote. Like the log view,
+nothing here writes: `b` is reserved for checking out the branch under the cursor and is
+routed nowhere yet.
+
 Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
 
 ## Development
@@ -93,7 +114,10 @@ covering the cases that break naive parsers — paths with spaces and non-ASCII 
 with no trailing newline, a merge commit, and a tree that is simultaneously staged, unstaged
 and untracked. It also carries a file whose two edits stay two separate hunks under the default
 `-U3`, which is the only way to test that staging one hunk leaves the other alone.
-`mkbig.sh` builds 100k commits in about eleven seconds via `git fast-import`.
+It also carries five branches covering every tracking state a row can be in — ahead, behind,
+in sync, upstream deleted, and no upstream — built entirely out of refs, so no SHA moves and
+no golden file churns. `mkbig.sh` builds 100k commits in about eleven seconds via
+`git fast-import`.
 
 Both pin author and committer identity and dates and null out global and system config, so
 SHAs are byte-identical across runs and machines. Golden files depend on that.
@@ -107,7 +131,7 @@ SHAs are byte-identical across runs and machines. Golden files depend on that.
 | M2 | ✅ staging by file, hunk and line |
 | M3 | ✅ commit and amend |
 | M4 | ✅ Log pane, commit detail, commit graph |
-| M5 | Branch pane |
+| M5 | ✅ Branch pane (read-only; checkout still to come) |
 | M6 | Performance pass, mouse, resizable splitter |
 
 ## License
