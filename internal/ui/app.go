@@ -29,15 +29,17 @@ import (
 // commit its own budget when that shows up, not before.
 const gitTimeout = 30 * time.Second
 
-// The fraction of the terminal given to the left pane in each view. The files
-// pane takes the least: a row there carries a status code and a path, where a
-// log row carries a graph, a SHA, a date and a subject, and a branch row a
-// name, a tracking count, a date and a subject.
-const (
-	filesPaneWidth  = 0.34
-	logPaneWidth    = 0.5
-	branchPaneWidth = 0.5
-)
+// splitDefaults is the fraction of the terminal the left pane starts with in
+// each view. The files pane takes the least: a row there carries a status code
+// and a path, where a log row carries a graph, a SHA, a date and a subject,
+// and a branch row a name, a tracking count, a date and a subject.
+//
+// It is where each view starts, not where it stays: the splitter moves them.
+var splitDefaults = [...]float64{
+	viewStatus:   0.34,
+	viewLog:      0.5,
+	viewBranches: 0.5,
+}
 
 var errEmptyMessage = errors.New("empty commit message")
 
@@ -181,6 +183,20 @@ type Model struct {
 	// the list on screen describes a branch that has moved on.
 	branchesLoaded bool
 
+	// splits is the fraction of the terminal the left pane gets, per view,
+	// seeded from splitDefaults and moved by the splitter. Per view because
+	// the three pairs of panes want different proportions of the same
+	// terminal; an array rather than a map because Model is copied on every
+	// Update and a map would be shared by every copy of it.
+	splits [len(splitDefaults)]float64
+
+	// dragging is set while the splitter is being dragged, and dragGrab is
+	// where in it the pointer took hold — the splitter is two adjacent border
+	// columns, and without the offset grabbing the right-hand one would jump
+	// the boundary a column before it started to track.
+	dragging bool
+	dragGrab int
+
 	width, height int
 	// Pane dimensions computed by layout. A lipgloss border sizes itself to
 	// its content, so a pane whose body is short ("loading…") would otherwise
@@ -216,6 +232,7 @@ func New(root string) Model {
 		diff:   pane.NewDiff(),
 		commit: pane.NewCommit(),
 		detail: pane.NewDetail(),
+		splits: splitDefaults,
 	}
 }
 
@@ -589,6 +606,33 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.loadHeadMessage()
+
+	// The splitter, from the keyboard. Left and Right have been in the keymap
+	// and bound to nothing since M0, and moving the boundary between the panes
+	// is what a horizontal motion means in a two-pane layout.
+	//
+	// One column a press. The terminal repeats a held key, and a coarser step
+	// would be unable to land on a particular column — which is the whole
+	// reason to reach for the keyboard rather than the pointer.
+	//
+	// Unlike the drag, these work in the unbordered layout: a very short
+	// terminal has no border column to take hold of, but its panes still split
+	// the width. setSplit refuses when there is genuinely no boundary, which
+	// is the narrow layout's single pane.
+	//
+	// ponytail: this takes the only natural binding for scrolling the diff
+	// sideways, which the viewport supports and nothing has ever reached — the
+	// pane turns wrapping off precisely so a long line scrolls rather than
+	// reflows, and then no key scrolls it. Give it H and L if a clipped line
+	// turns out to matter; widening the pane is the answer to it today, which
+	// is what these keys now do.
+	case keys.Matches(m.keys.Left, k):
+		m.setSplit(m.leftW - 1)
+		return m, nil
+
+	case keys.Matches(m.keys.Right, k):
+		m.setSplit(m.leftW + 1)
+		return m, nil
 
 	case keys.Matches(m.keys.NextPane, k), keys.Matches(m.keys.PrevPane, k):
 		if m.focus == focusLeft {
@@ -988,14 +1032,35 @@ func wholeFileOnly(f git.FileStatus, staged bool) bool {
 // scrollback does, and a notch that moved one row would need a spin per screen.
 const wheelStep = 3
 
-// handleMouse routes clicks and the wheel.
+// handleMouse routes clicks, drags and the wheel.
 //
-// A click takes focus and puts the pane's cursor on the row under the pointer;
-// the wheel scrolls the pane under the pointer without taking focus, which is
-// what a wheel does everywhere else. Motion and release are ignored: nothing
-// is dragged yet, and the app asks for cell motion so they only arrive at all
-// while a button is held.
+// A click takes focus and puts the pane's cursor on the row under the pointer,
+// or takes hold of the splitter when that is what it landed on; the wheel
+// scrolls the pane under the pointer without taking focus, which is what a
+// wheel does everywhere else.
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	e := msg.Mouse()
+
+	// Release and motion are answered ahead of every other guard, because a
+	// drag has to end wherever it ends. A release outside the frame, or one
+	// that arrives while the editor is open, would otherwise leave the flag
+	// set — and under cell motion the terminal only reports motion while a
+	// button is held, so the next press-and-move anywhere on screen would
+	// resize the splitter.
+	switch msg.(type) {
+	case tea.MouseReleaseMsg:
+		m.dragging = false
+		return m, nil
+	case tea.MouseMotionMsg:
+		// Motion with no grab is a mouse being moved across a pane, which
+		// means nothing here. The editor covers both panes, so a drag behind
+		// it moves a boundary that is not on screen.
+		if m.dragging && !m.commit.Active() {
+			m.setSplit(e.X + m.dragGrab)
+		}
+		return m, nil
+	}
+
 	// The message editor replaces both panes rather than sitting beside them,
 	// so while it is open there is nothing under the pointer to click. It owns
 	// the mouse for the same reason it owns every key.
@@ -1003,7 +1068,6 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	e := msg.Mouse()
 	hit, ok := m.hitTest(e.X, e.Y)
 	if !ok {
 		return m, nil
@@ -1015,6 +1079,13 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// one opens their own menu, and taking either would be taking a
 		// gesture the user means for the terminal.
 		if e.Button != tea.MouseLeft {
+			return m, nil
+		}
+		if hit.splitter {
+			// Where in the splitter the pointer took hold, so the boundary
+			// tracks the pointer from the first reported motion rather than
+			// snapping a column one way or the other.
+			m.dragging, m.dragGrab = true, m.leftW-e.X
 			return m, nil
 		}
 		// Focus moves even when the click landed on the pane's border or
@@ -1094,10 +1165,12 @@ func (m Model) mouseMove(p focus, n int, abs bool) (tea.Model, tea.Cmd) {
 
 // mouseHit is where a mouse event landed: which pane slot, and which row of
 // that pane's body. row is -1 when the point is on the pane's chrome — its
-// border or its title — rather than on a content row.
+// border or its title — rather than on a content row, and splitter marks the
+// boundary between the two panes, which is a handle rather than either of them.
 type mouseHit struct {
-	pane focus
-	row  int
+	pane     focus
+	row      int
+	splitter bool
 }
 
 // hitTest maps a terminal cell to the pane under it. ok is false for the app
@@ -1115,6 +1188,18 @@ func (m Model) hitTest(x, y int) (mouseHit, bool) {
 	}
 
 	hit := mouseHit{pane: focusLeft, row: -1}
+
+	// The splitter is the two adjacent border columns where the panes meet,
+	// read from the absolute column before the right pane's offset comes off
+	// x: afterwards both of them are indexed exactly like the frame's own
+	// outer borders, and column 0 and the last column are not handles.
+	//
+	// There is nothing to grab in the unbordered layout, where the panes are
+	// flush and no column belongs to the boundary, nor in the narrow one,
+	// where there is only one pane. The keys have no such limit — see
+	// setSplit's callers.
+	hit.splitter = m.bordered() && !m.narrow && (x == m.leftW-1 || x == m.leftW)
+
 	paneW := m.leftW
 	switch {
 	case m.narrow:
@@ -1168,7 +1253,7 @@ func (m *Model) layout() {
 	if m.narrow {
 		m.leftW, m.rightW = m.width, m.width
 	} else {
-		m.leftW = int(float64(m.width) * m.paneSplit())
+		m.leftW = int(float64(m.width) * m.splits[m.view])
 		if m.leftW < minPaneWidth {
 			m.leftW = minPaneWidth
 		}
@@ -1193,15 +1278,39 @@ func (m *Model) layout() {
 	m.commit.SetSize(m.contentW(m.width), m.contentH())
 }
 
-// paneSplit is the fraction of the terminal the left pane gets in this view.
-func (m Model) paneSplit() float64 {
-	switch m.view {
-	case viewLog:
-		return logPaneWidth
-	case viewBranches:
-		return branchPaneWidth
+// setSplit moves the boundary between the panes of the current view so the
+// left one is leftW columns wide, and re-lays out on the answer.
+//
+// The split is stored as a fraction rather than a column count, so a later
+// resize keeps the proportion the user chose. A stored column count would
+// survive a resize as a proportion nobody asked for — a 40/40 split dragged on
+// an 80-column terminal is half of it, not 40 columns of a 200-column one.
+//
+// The clamp is here as well as in layout() because what is stored is what a
+// resize is later read against: layout() clamping a 2% fraction up to
+// minPaneWidth would leave the pane at the minimum on this terminal and at two
+// columns on a much wider one.
+func (m *Model) setSplit(leftW int) {
+	// Below two minimum-width panes there is one pane, and no boundary
+	// between panes to move.
+	if m.narrow || m.width <= 0 {
+		return
 	}
-	return filesPaneWidth
+	if leftW < minPaneWidth {
+		leftW = minPaneWidth
+	}
+	if maxW := m.width - minPaneWidth; leftW > maxW {
+		leftW = maxW
+	}
+	// The middle of the column, not its left edge. layout() truncates the
+	// fraction back into a column count, and float64(leftW)/float64(width)
+	// does not always survive the round trip — 29 columns of 100 comes back as
+	// 28 — so a stepped resize would stall on those columns with the key doing
+	// nothing at all. Half a column of slack is below the resolution of
+	// anything that reads this and puts the truncation in the middle of the
+	// column rather than on its boundary.
+	m.splits[m.view] = (float64(leftW) + 0.5) / float64(m.width)
+	m.layout()
 }
 
 // contentW is the usable width inside a pane's border.

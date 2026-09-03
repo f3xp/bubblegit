@@ -364,11 +364,11 @@ func TestMouseIgnoredWhileEditing(t *testing.T) {
 	}
 }
 
-// TestDragAndReleaseAreInert pins that only clicks and the wheel are acted on.
-// The app asks the terminal for cell motion, so these arrive while a button is
-// held; the splitter that will want them does not exist yet, and until it does
-// a drag must not move a cursor the user is not pointing at.
-func TestDragAndReleaseAreInert(t *testing.T) {
+// TestDragInsideAPaneIsInert: the splitter is the only thing a drag moves, so
+// motion that began inside a pane rather than on the boundary must not drag
+// the cursor along with the pointer. See splitter_test.go for the drags that
+// do something.
+func TestDragInsideAPaneIsInert(t *testing.T) {
 	h := newHarness(t)
 
 	for _, msg := range []tea.Msg{

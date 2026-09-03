@@ -44,7 +44,8 @@ rather than a pane of its own: two is what an 80-column terminal has room for, a
 would be three slivers.
 
 `j`/`k` move, `g`/`G` jump to the ends, `ctrl+d`/`ctrl+u` half-page, `tab` switches pane,
-`t` toggles the diff between the worktree and staged sides, `q` or `ctrl+c` quits.
+`h`/`l` move the splitter, `t` toggles the diff between the worktree and staged sides, `q` or
+`ctrl+c` quits.
 
 `space` stages what is under the cursor — the whole file in the list, one line in the diff, or
 the whole hunk when the cursor is on a `@@` header. `a` takes the hunk from anywhere inside it.
@@ -108,7 +109,18 @@ It runs `git switch`, not `git checkout`: the old command also restores files, s
 `git checkout <name>` is ambiguous when a path shares a name with a branch, and it resolves
 that by guessing.
 
-Below 48 columns the layout drops to a single pane and `tab` swaps which one is visible.
+`h`/`l` move the boundary between the panes one column at a time, and dragging it with the
+mouse moves it too — it is the two border columns where the panes meet. Each view keeps its own
+split, because the three pairs of panes want different proportions of the same terminal, and
+what is stored is a fraction rather than a column count, so resizing the terminal keeps the
+proportion you chose rather than a column count that no longer means the same thing. Neither
+pane goes below 24 columns.
+
+The keys work in one place the drag cannot: a terminal too short for pane chrome has no border
+column to take hold of, but its panes still split the width.
+
+Below 48 columns the layout drops to a single pane, `tab` swaps which one is visible, and the
+splitter is inert — there is no boundary between panes to move.
 
 The mouse works wherever a pointer is unambiguous. A left click focuses the pane it lands on
 and puts that pane's cursor on the row under it — in the diff that is the line `space` then
