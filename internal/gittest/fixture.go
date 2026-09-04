@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -39,39 +40,92 @@ func runScript(tb testing.TB, script, dest string, args ...string) {
 // spaces and non-ASCII bytes, a file with no trailing newline, a merge commit,
 // and a working tree that is simultaneously staged, unstaged and untracked.
 // Each call gets its own copy, so tests may mutate it freely.
+//
+// The copy is of a cached build rather than a fresh run of the generator. The
+// script is 26 git processes, about 0.9s, and the ui package alone asks for one
+// per test: caching turns a 95s package into a few seconds, which is the
+// difference between running the tests while working and running them after.
 func Small(tb testing.TB) string {
 	tb.Helper()
 	dest := filepath.Join(tb.TempDir(), "small")
-	runScript(tb, "mksmall.sh", dest)
+	copyRepo(tb, cached(tb, "mksmall.sh"), dest)
 	return dest
 }
 
 // Big returns a repo with n commits, for benchmarks.
 //
-// It is cached across runs in the OS temp dir because building 100k commits
-// takes ~11s. The cache key includes a hash of the generator scripts: a
-// benchmark harness that silently measures a stale fixture is worse than a
-// slow one, because the numbers look fine and mean nothing.
-//
-// Benchmarks must treat the result as READ-ONLY. Anything that mutates a repo
-// belongs on Small.
+// Benchmarks must treat the result as READ-ONLY: it is the cached build itself,
+// not a copy, because 100k commits is too much to copy per call. Anything that
+// mutates a repo belongs on Small.
 func Big(tb testing.TB, n int) string {
 	tb.Helper()
-	dest := filepath.Join(os.TempDir(),
-		fmt.Sprintf("bubblegit-fixture-big-%d-%s", n, scriptsHash(tb)))
+	return cached(tb, "mkbig.sh", fmt.Sprintf("%d", n))
+}
+
+// cached builds a fixture once and reuses it across runs, keyed by the
+// generator and its arguments.
+//
+// The cache key includes a hash of the scripts: a harness that silently
+// measures a stale fixture is worse than a slow one, because the numbers look
+// fine and mean nothing.
+//
+// The build goes to a scratch directory and is renamed into place, because
+// `go test ./...` runs packages in parallel and two of them can ask for the
+// same fixture at the same moment. Rename is atomic, so the loser of that race
+// finds a finished repo rather than half of one. It may also find the winner's
+// — hence the tolerance of an existing destination.
+func cached(tb testing.TB, script string, args ...string) string {
+	tb.Helper()
+
+	key := strings.TrimSuffix(strings.TrimPrefix(script, "mk"), ".sh")
+	for _, a := range args {
+		key += "-" + a
+	}
+	dest := filepath.Join(os.TempDir(), fmt.Sprintf("bubblegit-fixture-%s-%s", key, scriptsHash(tb, script)))
 	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil {
 		return dest
 	}
-	runScript(tb, "mkbig.sh", dest, fmt.Sprintf("%d", n))
+
+	scratch, err := os.MkdirTemp(os.TempDir(), "bubblegit-fixture-building-")
+	if err != nil {
+		tb.Fatalf("fixture scratch dir: %v", err)
+	}
+	defer os.RemoveAll(scratch)
+
+	build := filepath.Join(scratch, "repo")
+	runScript(tb, script, build, args...)
+	if err := os.Rename(build, dest); err != nil && !os.IsExist(err) {
+		// A concurrent builder that got there first is not an error; anything
+		// else is.
+		if _, statErr := os.Stat(filepath.Join(dest, ".git")); statErr != nil {
+			tb.Fatalf("publishing fixture %s: %v", dest, err)
+		}
+	}
 	return dest
+}
+
+// copyRepo copies a cached fixture so the caller may mutate it.
+//
+// -p keeps the timestamps. git calls an index entry whose mtime is not
+// strictly older than the index itself "racy clean" and re-hashes the file on
+// every status; a copy with fresh mtimes is entirely racy, which is the same
+// artifact mkbig.sh backdates its worktree to avoid.
+func copyRepo(tb testing.TB, src, dest string) {
+	tb.Helper()
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		tb.Fatalf("fixture copy: %v", err)
+	}
+	if out, err := exec.Command("cp", "-Rp", src+"/.", dest).CombinedOutput(); err != nil {
+		tb.Fatalf("copying fixture %s: %v\n%s", src, err, out)
+	}
 }
 
 // scriptsHash fingerprints the fixture generator so editing a script
 // invalidates every cached repo built by the old one.
-func scriptsHash(tb testing.TB) string {
+func scriptsHash(tb testing.TB, script string) string {
 	tb.Helper()
 	h := sha256.New()
-	for _, name := range []string{"common.sh", "mkbig.sh"} {
+	for _, name := range []string{"common.sh", script} {
 		b, err := os.ReadFile(filepath.Join(fixturesDir(), name))
 		if err != nil {
 			tb.Fatalf("hashing fixture scripts: %v", err)
