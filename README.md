@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/bubblegit.png" alt="bubblegit" width="160">
+  <img src="docs/assets/bubblegit.png" alt="bubblegit" width="200">
 </p>
 
 <h1 align="center">bubblegit</h1>
