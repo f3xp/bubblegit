@@ -276,6 +276,15 @@ func (d *Diff) View() string {
 	return d.vp.View()
 }
 
+// The three +/- prefixes are constant text in a constant style, so they are
+// rendered once rather than once per line. A large diff is hundreds of
+// thousands of lines of this.
+var (
+	addPrefix     = theme.Add.Render("+")
+	delPrefix     = theme.Del.Render("-")
+	contextPrefix = theme.Context.Render(" ")
+)
+
 // numWidth is the width of each line-number column, wide enough for a
 // five-figure file without reflowing.
 const numWidth = 4
@@ -314,12 +323,12 @@ func renderLine(hl *highlight.Highlighter, l git.Line) string {
 	// the line's tokens.
 	body := hl.Line(l.Text)
 
-	prefix, style := " ", theme.Context
+	prefix := contextPrefix
 	switch l.Kind {
 	case git.LineAdd:
-		prefix, style = "+", theme.Add
+		prefix = addPrefix
 	case git.LineDel:
-		prefix, style = "-", theme.Del
+		prefix = delPrefix
 	}
 
 	// Two columns, old then new. A single column would have to show the old
@@ -330,7 +339,7 @@ func renderLine(hl *highlight.Highlighter, l git.Line) string {
 	// exactly this column.
 	gutter := num(l.OldNum) + " " + num(l.NewNum)
 
-	return theme.Dim.Render(gutter) + style.Render(prefix) + body
+	return theme.Dim.Render(gutter) + prefix + body
 }
 
 func num(n int) string {
