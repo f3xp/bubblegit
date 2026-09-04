@@ -263,6 +263,44 @@ func TestNarrowLogViewSwapsPanes(t *testing.T) {
 // TestLogPagesWhileScrolling drives the paging path the fixture repository is
 // too small to reach: jump to the bottom of what is loaded and check the next
 // page arrives and extends the list rather than replacing it.
+// TestPagingIsNotRequestedTwice pins the guard that keeps a held j from asking
+// for the same page over and over.
+//
+// Every j at the bottom of the list calls loadMoreLog, and a terminal repeats a
+// held key, so without the in-flight check the same page is read several times
+// and the answers race each other into the list. The check is also what keeps
+// Frontier — a walk over every commit loaded — from running per keystroke for
+// an answer that is discarded; that ordering is not observable from here and is
+// held by the comment beside it.
+func TestPagingIsNotRequestedTwice(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog()
+	// Answer the load the view switch issued, with a full page whose parents
+	// are not loaded: that is a list with more history behind it.
+	h.send(logMsg{gen: h.m.logGen, commits: commitsFor(git.LogPageSize)})
+
+	if cmd := h.m.loadMoreLog(); cmd == nil {
+		t.Fatal("a full page with more history behind it did not ask for the next one")
+	}
+	if cmd := h.m.loadMoreLog(); cmd != nil {
+		t.Error("a second page was requested while the first was still in flight")
+	}
+}
+
+// commitsFor builds a page of commits whose parents are not loaded, which is
+// what makes the list resumable rather than at its end.
+func commitsFor(n int) []git.Commit {
+	cs := make([]git.Commit, n)
+	for i := range cs {
+		cs[i] = git.Commit{
+			SHA:     fmt.Sprintf("%040x", i),
+			Short:   fmt.Sprintf("%07x", i),
+			Parents: []string{fmt.Sprintf("%040x", i+1)},
+		}
+	}
+	return cs
+}
+
 func TestLogPagesWhileScrolling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping big-fixture paging test in -short mode")

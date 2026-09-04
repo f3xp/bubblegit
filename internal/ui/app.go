@@ -312,9 +312,16 @@ func (m *Model) loadLog() tea.Cmd {
 // and discard N commits, so paging by offset gets slower the further the user
 // scrolls. See TestPaginationStrategy, and git.Frontier for why the resumption
 // point is a set.
+// The guards come before Frontier(), which walks every commit already loaded to
+// find the tips to resume from. Every j at the bottom of the list asks for the
+// next page, so with a request already in flight that walk was being redone per
+// keystroke for an answer that was thrown away.
 func (m *Model) loadMoreLog() tea.Cmd {
+	if m.logPaging || m.log.AtEnd() {
+		return nil
+	}
 	from := m.log.Frontier()
-	if m.logPaging || m.log.AtEnd() || len(from) == 0 {
+	if len(from) == 0 {
 		return nil
 	}
 	m.logPaging = true
