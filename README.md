@@ -1,4 +1,8 @@
-# bubblegit
+<p align="center">
+  <img src="docs/assets/bubblegit.png" alt="bubblegit" width="160">
+</p>
+
+<h1 align="center">bubblegit</h1>
 
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), aiming to be
 fast on large repositories and more interactive than the alternatives.
