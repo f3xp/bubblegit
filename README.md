@@ -199,18 +199,6 @@ no golden file churns. `mkbig.sh` builds 100k commits in about eleven seconds vi
 Both pin author and committer identity and dates and null out global and system config, so
 SHAs are byte-identical across runs and machines. Golden files depend on that.
 
-## Milestones
-
-| | |
-| --- | --- |
-| M0 | ✅ git layer, fixtures, benchmark harness, app skeleton |
-| M1 | ✅ files pane and syntax-highlighted diff, read-only |
-| M2 | ✅ staging by file, hunk and line |
-| M3 | ✅ commit and amend |
-| M4 | ✅ Log pane, commit detail, commit graph |
-| M5 | ✅ Branch pane, checkout |
-| M6 | ✅ Performance pass, mouse, resizable splitter |
-
 ## License
 
 MIT
