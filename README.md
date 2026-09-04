@@ -7,10 +7,10 @@
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea), aiming to be
 fast on large repositories and more interactive than the alternatives.
 
-> **Status: early.** Milestone 5 is complete — a working-tree view with syntax-highlighted
+> **Status: early.** Milestone 6 is complete — a working-tree view with syntax-highlighted
 > diffs, staging by file, by hunk and by line, and commit and amend, a log view with a commit
-> graph and a commit detail pane, and a branch view that lists the local branches and checks
-> one out.
+> graph and a commit detail pane, a branch view that lists the local branches and checks one
+> out, and a mouse, a draggable splitter and a render path that stays off the event loop.
 
 ## Why shell out to `git`
 
@@ -140,12 +140,42 @@ update and re-render each, for a message that is then discarded. Either mode cos
 terminal's own text selection, which the app can neither read nor replace; most terminals
 still select while shift is held, and that is the escape hatch this trades against.
 
+## Rendering off the event loop
+
+Shelling out to git is only half of what showing a diff costs. The other half is turning it into
+coloured rows, and that half is bigger: the syntax highlighter costs about twenty microseconds a
+line, so a ten-thousand-line file — a lockfile, a generated file, or any untracked file, which
+git diffs against `/dev/null` and so reports as one hunk of the whole thing — is a fifth of a
+second of pure computation. Done where the answer arrives, that is a fifth of a second in which
+the app reads no keys.
+
+So it is done where the read is. `RenderDiff` and `RenderDetail` run inside the same command
+goroutine that ran git, and the message that comes back carries rows rather than a diff. The
+generation counter that already discarded superseded reads discards superseded renders with them,
+for free.
+
+The symptom that makes this worth doing is not opening a large file, which happens once. It is
+staging: every `space` re-reads the file and re-renders it, so on a large diff the pane stalled
+between keystrokes.
+
+Two things fall out of putting rendering in a goroutine. The lexer lookup is memoised, because
+`chroma`'s registry walks every language's filename globs — a millisecond — and a commit touching
+a vendored tree asks for it once per file; the memo means every goroutine colouring a `.go` file
+now shares one lexer, which is why the mutex around it is load-bearing rather than defensive. And
+the budget that guards all this is a ratio, not a duration: `TestRenderScalesLinearly` asserts
+that twice the lines cost about twice the work. A wall-clock number would only record the machine
+it was written on, and the way a render path actually goes wrong is by turning quadratic.
+
+Per frame, by contrast, costs the height of the pane and not the length of the document. That is
+what `SoftWrap = false` buys, on top of the honest line count that line-level staging needs.
+
 ## Development
 
 ```sh
 go test ./...                  # unit tests and golden files
 go test ./... -update          # re-record golden files after a UI change
 go test ./internal/git -bench . # read-path benchmarks
+go test ./internal/ui/pane -bench . # render-path benchmarks
 go test ./... -short           # skip the 100k-commit fixture
 ```
 
@@ -154,11 +184,13 @@ go test ./... -short           # skip the 100k-commit fixture
 happened to run during a busy stretch, a few milliseconds over the budget. Confirm a real
 regression with `go test ./internal/git -p 1` before believing it.
 
-Test fixtures are generated, not checked in. `testdata/fixtures/mksmall.sh` builds a repo
-covering the cases that break naive parsers — paths with spaces and non-ASCII bytes, a file
-with no trailing newline, a merge commit, and a tree that is simultaneously staged, unstaged
-and untracked. It also carries a file whose two edits stay two separate hunks under the default
-`-U3`, which is the only way to test that staging one hunk leaves the other alone.
+Test fixtures are generated, not checked in, and built once per machine rather than per test:
+`gittest.Small` copies a cached build, which is the difference between a 95-second `internal/ui` and
+a 19-second one. `testdata/fixtures/mksmall.sh` builds a repo covering the cases that break naive
+parsers — paths with spaces and non-ASCII bytes, a file with no trailing newline, a merge commit,
+and a tree that is simultaneously staged, unstaged and untracked. It also carries a file whose two
+edits stay two separate hunks under the default `-U3`, which is the only way to test that staging
+one hunk leaves the other alone.
 It also carries five branches covering every tracking state a row can be in — ahead, behind,
 in sync, upstream deleted, and no upstream — built entirely out of refs, so no SHA moves and
 no golden file churns. `mkbig.sh` builds 100k commits in about eleven seconds via
@@ -177,7 +209,7 @@ SHAs are byte-identical across runs and machines. Golden files depend on that.
 | M3 | ✅ commit and amend |
 | M4 | ✅ Log pane, commit detail, commit graph |
 | M5 | ✅ Branch pane, checkout |
-| M6 | Performance pass, mouse, resizable splitter |
+| M6 | ✅ Performance pass, mouse, resizable splitter |
 
 ## License
 
