@@ -95,31 +95,74 @@ func (d *Diff) clear() {
 	d.vp.SetYOffset(0)
 }
 
-func (d *Diff) SetDiff(fd git.FileDiff) {
+// DiffContent is a diff already turned into rows.
+//
+// Building one is the expensive half of showing a diff — the highlighter costs
+// tens of microseconds a line, so a large file runs to hundreds of milliseconds
+// — and it is pure computation over a value the git layer has already produced.
+// So it is built by RenderDiff inside the command that read the diff, off the
+// loop that answers keystrokes, and handed to the pane finished.
+//
+// Nothing here is exported. lines and rows are produced by one function and
+// travel together, which is what keeps them one-to-one: the invariant the whole
+// pane rests on cannot be broken by two callers rendering separately.
+type DiffContent struct {
+	fd    git.FileDiff
+	lines []string
+	rows  []rowRef
+}
+
+// Rows reports how many rows this content occupies.
+//
+// It exists so a test can tell rendered content from unrendered: the whole
+// point of DiffContent is that the rows are built where the diff is read, and
+// nothing else about the pane would notice if that quietly moved back onto the
+// Update path.
+func (c DiffContent) Rows() int { return len(c.rows) }
+
+// RenderDiff renders a diff for the pane to show. It is a plain function, not
+// a tea.Cmd, so that the command stays in the layer that owns the git call and
+// this package keeps knowing nothing about the event loop.
+func RenderDiff(fd git.FileDiff) DiffContent {
+	c := DiffContent{fd: fd}
+	if fd.Binary || fd.IsEmpty() {
+		// Neither renders as rows, and both are cheap to recognise here rather
+		// than making the pane ask twice.
+		return c
+	}
+	c.lines, c.rows = renderLines(fd)
+	return c
+}
+
+func (d *Diff) SetDiff(c DiffContent) {
 	d.loading = false
 	d.err = nil
-	d.title = fd.Path
+	d.title = c.fd.Path
 
 	// Staging a hunk reloads the same file with that hunk gone. Starting over
 	// at the top each time would walk the cursor back to the first hunk after
 	// every keystroke, so the row is kept and clamped instead.
-	same := fd.Path == d.path
+	same := c.fd.Path == d.path
 	cursor := d.cursor
 	d.clear()
-	d.path = fd.Path
+	d.path = c.fd.Path
 
 	switch {
-	case fd.Binary:
+	case c.fd.Binary:
 		d.empty = "binary file — no textual diff"
 		return
-	case fd.IsEmpty():
+	case c.fd.IsEmpty():
 		d.empty = "no changes"
 		return
 	}
 
-	lines, rows := renderLines(fd)
-	d.fd, d.rows = fd, rows
-	d.vp.SetContentLines(lines)
+	d.fd, d.rows = c.fd, c.rows
+	// ponytail: this is the part of showing a diff that is still on the Update
+	// path. SetContentLines walks every line to find the longest — about 0.4µs
+	// a line, so 4ms at ten thousand and 40ms at a hundred thousand, paid again
+	// on every stage keystroke, which reloads the file. It is a fortieth of the
+	// render it replaced. Bound it the day a file that large is worth showing.
+	d.vp.SetContentLines(c.lines)
 	if same {
 		d.cursor = cursor
 	}
@@ -240,6 +283,11 @@ const numWidth = 4
 // gutterWidth covers both columns and the space between them.
 const gutterWidth = numWidth*2 + 1
 
+// renderLines returns one rendered line and one rowRef per row, in step.
+//
+// The slice it returns is handed straight to viewport.SetContentLines, which
+// takes ownership of it — it splits embedded newlines in place — so a caller
+// that ever caches these lines has to hand over a copy.
 func renderLines(fd git.FileDiff) ([]string, []rowRef) {
 	hl := highlight.For(fd.Path)
 

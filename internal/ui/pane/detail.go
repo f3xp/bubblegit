@@ -70,17 +70,35 @@ func (d *Detail) SetEmpty(reason string) {
 // the commit in git's own short form.
 func (d *Detail) Title() string { return abbrev(d.sha) }
 
-func (d *Detail) SetDetail(det git.Detail) {
+// DetailContent is a commit already turned into rows, built off the render
+// loop by RenderDetail for the same reason DiffContent is: a commit touching a
+// vendored tree carries every one of those files' patches, and each is
+// highlighted line by line.
+//
+// It keeps the SHA because that is what SetDetail compares to decide whether
+// this is a re-read of the commit already on screen, which must not throw the
+// reader back to the top of a long patch.
+type DetailContent struct {
+	sha   string
+	lines []string
+}
+
+// RenderDetail renders a commit for the pane to show.
+func RenderDetail(det git.Detail) DetailContent {
+	return DetailContent{sha: det.Commit.SHA, lines: detailLines(det)}
+}
+
+func (d *Detail) SetDetail(c DetailContent) {
 	d.loading = false
 	d.err = nil
 
 	// Re-reading the same commit — after a window resize, say — must not throw
 	// the reader back to the top of a long patch.
-	same := det.Commit.SHA == d.sha
+	same := c.sha == d.sha
 	off := d.vp.YOffset()
-	d.sha = det.Commit.SHA
+	d.sha = c.sha
 
-	d.vp.SetContentLines(detailLines(det))
+	d.vp.SetContentLines(c.lines)
 	if same {
 		d.vp.SetYOffset(off)
 	} else {

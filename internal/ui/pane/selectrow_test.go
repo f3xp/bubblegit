@@ -82,7 +82,7 @@ func TestDiffSelectRowCountsFromTheVisibleWindow(t *testing.T) {
 	}
 	d := NewDiff()
 	d.SetSize(40, 5)
-	d.SetDiff(git.FileDiff{Path: "a.txt", Hunks: []git.Hunk{{Header: "@@ -0,0 +1,30 @@", Lines: lines}}})
+	d.SetDiff(RenderDiff(git.FileDiff{Path: "a.txt", Hunks: []git.Hunk{{Header: "@@ -0,0 +1,30 @@", Lines: lines}}}))
 
 	// The hunk header is row 0, so the 31 rendered rows scroll: the cursor
 	// lands on the last one and the window shows rows 26..30.

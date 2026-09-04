@@ -12,6 +12,7 @@ import (
 
 	"github.com/f3xp/bubblegit/internal/git"
 	"github.com/f3xp/bubblegit/internal/gittest"
+	"github.com/f3xp/bubblegit/internal/ui/pane"
 )
 
 // enterLog switches to the log view and runs the reads it starts — the log
@@ -220,8 +221,8 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 
 	current := h.m.detailGen
 	h.send(detailMsg{
-		gen:    current - 1,
-		detail: git.Detail{Commit: git.Commit{SHA: strings.Repeat("f", 40), Short: "fffffff"}},
+		gen:     current - 1,
+		content: pane.RenderDetail(git.Detail{Commit: git.Commit{SHA: strings.Repeat("f", 40), Short: "fffffff"}}),
 	})
 	if got := h.m.detail.Title(); got == "fffffff" {
 		t.Error("a superseded detail was rendered")

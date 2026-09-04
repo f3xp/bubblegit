@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/f3xp/bubblegit/internal/git"
+	"github.com/f3xp/bubblegit/internal/ui/pane"
 )
 
 // TestStaleDiffResultsAreDiscarded is the guard for the bug that is easy to
@@ -41,14 +42,14 @@ func TestStaleDiffResultsAreDiscarded(t *testing.T) {
 	// The stale answer arrives last, which is exactly the ordering that breaks
 	// a naive implementation.
 	updated, _ := m.Update(diffMsg{
-		gen:  secondGen,
-		diff: git.FileDiff{Path: "second.txt", Hunks: []git.Hunk{{Header: "@@ -1 +1 @@"}}},
+		gen:     secondGen,
+		content: pane.RenderDiff(git.FileDiff{Path: "second.txt", Hunks: []git.Hunk{{Header: "@@ -1 +1 @@"}}}),
 	})
 	m = updated.(Model)
 
 	updated, _ = m.Update(diffMsg{
-		gen:  firstGen,
-		diff: git.FileDiff{Path: "first.txt", Hunks: []git.Hunk{{Header: "@@ -9 +9 @@"}}},
+		gen:     firstGen,
+		content: pane.RenderDiff(git.FileDiff{Path: "first.txt", Hunks: []git.Hunk{{Header: "@@ -9 +9 @@"}}}),
 	})
 	m = updated.(Model)
 
@@ -72,10 +73,10 @@ func TestSelectionChangeClearsTheBody(t *testing.T) {
 	m.loadDiff()
 	updated, _ := m.Update(diffMsg{
 		gen: m.diffGen,
-		diff: git.FileDiff{Path: "first.txt", Hunks: []git.Hunk{{
+		content: pane.RenderDiff(git.FileDiff{Path: "first.txt", Hunks: []git.Hunk{{
 			Header: "@@ -1 +1 @@",
 			Lines:  []git.Line{{Kind: git.LineAdd, Text: "unmistakable", NewNum: 1}},
-		}}},
+		}}}),
 	})
 	m = updated.(Model)
 

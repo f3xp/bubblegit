@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/f3xp/bubblegit/internal/git"
 	"github.com/f3xp/bubblegit/internal/gittest"
+	"github.com/f3xp/bubblegit/internal/ui/pane"
 )
 
 // harness drives the model through Update directly.
@@ -196,7 +198,72 @@ func (h *harness) resolveDiff() {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.send(diffMsg{gen: h.m.diffGen, diff: d})
+	h.send(diffMsg{gen: h.m.diffGen, content: pane.RenderDiff(d)})
+}
+
+// TestDiffIsRenderedInTheCommand pins where the expensive half of showing a
+// diff happens.
+//
+// Rendering costs tens of microseconds a line — a large file runs to hundreds
+// of milliseconds — and there is nothing about the pane that would notice if it
+// moved back onto the Update path, where it would stall every keystroke behind
+// it. So the guard is on the message the production command produces: it has to
+// arrive with its rows already built.
+//
+// It runs the real command rather than the harness's own message, which would
+// only be a test of the harness.
+func TestDiffIsRenderedInTheCommand(t *testing.T) {
+	h := newHarness(t)
+	h.press("j") // logo.png is binary and renders as no rows at all
+
+	cmd := h.m.loadDiff()
+	if cmd == nil {
+		t.Fatal("no diff was requested for the selected file")
+	}
+	msg, ok := cmd().(diffMsg)
+	if !ok {
+		t.Fatalf("loadDiff produced %T, want diffMsg", cmd())
+	}
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	if msg.content.Rows() == 0 {
+		t.Error("the diff message carries no rendered rows; rendering has moved back onto the Update path")
+	}
+}
+
+// TestConcurrentLoadsShareOneHighlighter is the race detector's way in.
+//
+// highlight.For memoises, so every goroutine rendering a .go file lexes through
+// the same Highlighter, and a diff, a commit detail and a branch tip can all be
+// in flight at once. Run with -race this is the only test that exercises that.
+func TestConcurrentLoadsShareOneHighlighter(t *testing.T) {
+	h := newHarness(t)
+	h.press("j") // main.go
+
+	cmds := []tea.Cmd{h.m.loadDiff(), h.m.loadDetailFor(headSHA(h)), h.m.loadDiff()}
+	var wg sync.WaitGroup
+	for _, cmd := range cmds {
+		if cmd == nil {
+			t.Fatal("a load produced no command")
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cmd()
+		}()
+	}
+	wg.Wait()
+}
+
+// headSHA is the commit the detail pane is pointed at; any real one will do.
+func headSHA(h *harness) string {
+	h.t.Helper()
+	out, err := h.r.Run(context.Background(), "rev-parse", "HEAD")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestNavigationMovesSelection(t *testing.T) {

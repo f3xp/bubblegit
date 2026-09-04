@@ -96,10 +96,16 @@ type amendMsg struct {
 // diffMsg carries the generation of the request that produced it. Anything
 // older than the pane's current generation is a stale answer to a question
 // the user has already moved on from.
+//
+// What it carries is the rendered diff rather than the parsed one. Rendering a
+// diff costs tens of microseconds a line — hundreds of milliseconds for a large
+// file — and doing it where this message is handled would spend all of it
+// inside Update, where nothing else can happen. It is the second half of the
+// same read, so it belongs on the same goroutine.
 type diffMsg struct {
-	gen  uint64
-	diff git.FileDiff
-	err  error
+	gen     uint64
+	content pane.DiffContent
+	err     error
 }
 
 // logMsg carries a page of the log. more distinguishes a continuation, which
@@ -124,12 +130,13 @@ type branchesMsg struct {
 	err      error
 }
 
-// detailMsg carries one commit's patch, generation-tagged for the same reason
-// diffMsg is.
+// detailMsg carries one commit's patch, rendered and generation-tagged for the
+// same reasons diffMsg is — and a commit carries every changed file's patch, so
+// there is more of it to render.
 type detailMsg struct {
-	gen    uint64
-	detail git.Detail
-	err    error
+	gen     uint64
+	content pane.DetailContent
+	err     error
 }
 
 type Model struct {
@@ -282,7 +289,7 @@ func (m *Model) loadDiff() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		d, err := git.DiffFile(ctx, repo, sel.Path, staged, untracked)
-		return diffMsg{gen: gen, diff: d, err: err}
+		return diffMsg{gen: gen, content: pane.RenderDiff(d), err: err}
 	}
 }
 
@@ -362,7 +369,7 @@ func (m *Model) loadDetailFor(sha string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		d, err := git.Show(ctx, repo, sha)
-		return detailMsg{gen: gen, detail: d, err: err}
+		return detailMsg{gen: gen, content: pane.RenderDetail(d), err: err}
 	}
 }
 
@@ -523,7 +530,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detail.SetError(msg.err)
 			return m, nil
 		}
-		m.detail.SetDetail(msg.detail)
+		m.detail.SetDetail(msg.content)
 
 	case diffMsg:
 		// Discard answers to superseded questions.
@@ -534,7 +541,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.diff.SetError(msg.err)
 			return m, nil
 		}
-		m.diff.SetDiff(msg.diff)
+		m.diff.SetDiff(msg.content)
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
