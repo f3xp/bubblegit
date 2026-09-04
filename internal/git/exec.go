@@ -25,16 +25,27 @@ type Runner struct {
 
 func New(dir string) *Runner { return &Runner{Dir: dir} }
 
-// Error carries git's stderr, which is what the UI should show the user.
+// Error carries what git said, which is what the UI should show the user.
 type Error struct {
 	Args     []string
 	ExitCode int
 	Stderr   string
-	err      error
+	// Stdout is kept only for the failures that explain themselves there.
+	// `git commit` with an empty index exits 1 with an empty stderr and puts
+	// "nothing to commit, working tree clean" on stdout, so a stderr-only
+	// Error renders that as "exit status 1" and tells the user nothing.
+	Stdout string
+	err    error
 }
 
 func (e *Error) Error() string {
 	msg := strings.TrimSpace(e.Stderr)
+	if msg == "" {
+		// Only the last line. When git explains itself on stdout it prints a
+		// whole status listing first — the same files the TUI is already
+		// showing in its own pane — and the conclusion is the final line.
+		msg = lastLine(e.Stdout)
+	}
 	if msg == "" {
 		msg = e.err.Error()
 	}
@@ -42,6 +53,11 @@ func (e *Error) Error() string {
 }
 
 func (e *Error) Unwrap() error { return e.err }
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
 
 // Run executes git with the given arguments and returns stdout.
 func (r *Runner) Run(ctx context.Context, args ...string) ([]byte, error) {
@@ -54,7 +70,16 @@ func (r *Runner) RunStdin(ctx context.Context, stdin []byte, args ...string) ([]
 }
 
 func (r *Runner) run(ctx context.Context, stdin []byte, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// core.quotepath escapes every non-ASCII byte in any path git prints
+	// outside -z output — the "diff --git a/…" headers of a patch, notably,
+	// where a UTF-8 filename arrives as \303\274 octal escapes. -z covers the
+	// read paths that have it; this covers the ones that do not.
+	//
+	// It is passed as argv rather than exported into the environment: the
+	// GIT_CONFIG_COUNT form would silently drop a user's own overrides, and
+	// the flag is left out of Error.Args so a failure still reports the
+	// command the caller actually asked for.
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.quotepath=false"}, args...)...)
 	cmd.Dir = r.Dir
 
 	// Inherit the user's environment so credential helpers, SSH agents and
@@ -74,6 +99,13 @@ func (r *Runner) run(ctx context.Context, stdin []byte, args []string) ([]byte, 
 		"PAGER=cat",
 		"NO_COLOR=1",
 		"GIT_TERMINAL_PROMPT=0", // never block the TUI on a credential prompt
+		// Same class of guard: an editor spawned inside a running Bubble Tea
+		// program fights it for the terminal and corrupts the display.
+		// `commit.template`, `commit.verbose` or a hook can all reach for one.
+		// `false` rather than `true` on purpose — `true` exits 0 and lets git
+		// commit whatever was already in the buffer, so a call that forgot
+		// `-F -` would silently commit the template instead of failing.
+		"GIT_EDITOR=false",
 		"LC_ALL=C",
 	)
 
@@ -89,6 +121,7 @@ func (r *Runner) run(ctx context.Context, stdin []byte, args []string) ([]byte, 
 			Args:     args,
 			ExitCode: cmd.ProcessState.ExitCode(),
 			Stderr:   stderr.String(),
+			Stdout:   stdout.String(),
 			err:      err,
 		}
 	}

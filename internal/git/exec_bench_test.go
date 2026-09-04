@@ -15,10 +15,6 @@ import (
 // measurement instead of a guess.
 const bigRepoCommits = 100000
 
-// logPageSize is how many commits the log pane loads at once. Reads MUST stay
-// bounded — "load all commits then render" is the failure mode this guards.
-const logPageSize = 100
-
 // workBudget caps the git work a single read may do, measured ABOVE the
 // process-spawn floor.
 //
@@ -30,26 +26,57 @@ const logPageSize = 100
 // we can actually fix.
 const workBudget = 8 * time.Millisecond
 
-// ops are the read paths on the hot loop, in the exact form the git layer
-// uses: plumbing commands with -z, never porcelain.
+// ops are the read paths on the hot loop.
+//
+// Each one calls the exported function the UI calls, rather than repeating its
+// argument list here. A table of raw args drifts silently: the day the git
+// layer changes a flag, this harness keeps passing while measuring a command
+// nothing runs any more, and a stale guard is worse than none because the
+// numbers still look fine.
 //
 // Pagination is cursor-based (start the walk at a SHA), never offset-based.
 // `--skip=N` is O(N) — git walks and discards every skipped commit — so page
 // 500 of the log costs 100x page 1. See TestPaginationStrategy.
 var ops = []struct {
-	name       string
-	args       []string
+	name string
+	// run performs the read and reports how much came back, so the budget test
+	// can tell a working read from one that quietly returns nothing.
+	run        func(context.Context, *git.Runner) (int, error)
 	mayBeEmpty bool // a clean repo legitimately produces no output
 }{
-	{name: "Status", args: []string{"status", "--porcelain=v2", "-z", "--untracked-files=all"}, mayBeEmpty: true},
-	{name: "LogFirstPage", args: []string{"log", "-z", "--no-color", "-n", "100",
-		"--format=%H%x00%h%x00%an%x00%at%x00%P%x00%s"}},
-	// -m --first-parent is load-bearing, not decoration: plain `diff-tree -p`
-	// emits NOTHING for a merge commit, so the detail pane would render blank
-	// on every merge. --cc is also empty for a clean merge (it only shows
-	// hunks differing from both parents). See TestCommitDetailShowsMerges.
-	{name: "CommitDetail", args: []string{"diff-tree", "-p", "--no-color", "-r", "-m", "--first-parent", "HEAD"}},
-	{name: "Refs", args: []string{"for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream:short)"}},
+	{
+		name:       "Status",
+		mayBeEmpty: true,
+		run: func(ctx context.Context, r *git.Runner) (int, error) {
+			f, err := git.Status(ctx, r)
+			return len(f), err
+		},
+	},
+	{
+		name: "LogFirstPage",
+		run: func(ctx context.Context, r *git.Runner) (int, error) {
+			c, err := git.Log(ctx, r, nil, git.LogPageSize)
+			return len(c), err
+		},
+	},
+	{
+		name: "CommitDetail",
+		run: func(ctx context.Context, r *git.Runner) (int, error) {
+			d, err := git.Show(ctx, r, "HEAD")
+			return len(d.Files), err
+		},
+	},
+	{
+		// The branch pane's read. %(upstream:track) makes git compute
+		// ahead/behind inside this one call; the obvious alternative costs a
+		// `rev-list --count` process per branch, which is what this budget is
+		// here to catch if anyone reaches for it.
+		name: "Branches",
+		run: func(ctx context.Context, r *git.Runner) (int, error) {
+			b, err := git.Branches(ctx, r)
+			return len(b), err
+		},
+	},
 }
 
 // bestOf returns the fastest of n runs after a warmup.
@@ -91,7 +118,7 @@ func BenchmarkOps(b *testing.B) {
 	for _, op := range ops {
 		b.Run(op.name, func(b *testing.B) {
 			for b.Loop() {
-				if _, err := r.Run(ctx, op.args...); err != nil {
+				if _, err := op.run(ctx, r); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -106,19 +133,25 @@ func TestWorkBudget(t *testing.T) {
 	r := benchRepo(t)
 	ctx := context.Background()
 
-	floor := spawnFloor()
-	t.Logf("process spawn floor on this machine: %v (all figures below are above this)",
-		floor.Round(time.Microsecond))
+	t.Logf("process spawn floor at the start of this run: %v (all figures below are "+
+		"reported above a floor re-measured per op)", spawnFloor().Round(time.Microsecond))
 
 	for _, op := range ops {
 		t.Run(op.name, func(t *testing.T) {
+			// The floor is re-measured beside each op rather than once up
+			// front. `go test ./...` builds and runs other packages in
+			// parallel, so a floor sampled while the machine was idle and an
+			// op timed while it was loaded do not subtract: the difference is
+			// the load, not the git work, and it trips whichever op happened
+			// to run during the busy stretch.
+			floor := spawnFloor()
 			total := bestOf(9, func() {
-				out, err := r.Run(ctx, op.args...)
+				n, err := op.run(ctx, r)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(out) == 0 && !op.mayBeEmpty {
-					t.Fatalf("empty output from git %v", op.args)
+				if n == 0 && !op.mayBeEmpty {
+					t.Fatalf("%s read returned nothing", op.name)
 				}
 			})
 			work := total - floor
@@ -154,10 +187,10 @@ func TestPaginationStrategy(t *testing.T) {
 	cursor := string(out[:40])
 
 	offset := bestOf(3, func() {
-		r.Run(ctx, "log", "-n", itoa(logPageSize), "--skip="+itoa(deep), "--format=%H")
+		r.Run(ctx, "log", "-n", itoa(git.LogPageSize), "--skip="+itoa(deep), "--format=%H")
 	})
 	byCursor := bestOf(3, func() {
-		r.Run(ctx, "log", "-n", itoa(logPageSize), "--format=%H", cursor)
+		r.Run(ctx, "log", "-n", itoa(git.LogPageSize), "--format=%H", cursor)
 	})
 
 	t.Logf("page at offset %d: --skip=%v vs cursor=%v",

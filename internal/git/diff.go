@@ -192,3 +192,60 @@ func parseRange(s string) (start, count int) {
 	start, _ = strconv.Atoi(s)
 	return start, count
 }
+
+// diffHeader starts each file's section of a multi-file patch.
+const diffHeader = "diff --git "
+
+// parseDiffFiles splits a multi-file patch — what `show` produces — into one
+// FileDiff per file.
+//
+// Splitting on "diff --git " at column 0 is safe: every line inside a hunk
+// carries a '+', '-' or ' ' prefix, so no content line can match it. Binary
+// files are marked per section rather than aborting the whole patch, which
+// single-file parseDiff can afford to do and this cannot.
+func parseDiffFiles(text string) []FileDiff {
+	var out []FileDiff
+
+	lines := strings.Split(text, "\n")
+	start := -1
+	flush := func(end int) {
+		if start < 0 {
+			return
+		}
+		d := parseDiff(strings.Join(lines[start:end], "\n"))
+		d.Path = headerPath(strings.TrimPrefix(lines[start], diffHeader))
+		out = append(out, d)
+	}
+
+	for i, l := range lines {
+		if strings.HasPrefix(l, diffHeader) {
+			flush(i)
+			start = i
+		}
+	}
+	flush(len(lines))
+	return out
+}
+
+// headerPath reads the path out of the "a/PATH b/PATH" tail of a diff header.
+//
+// The two halves are identical — --no-renames is what guarantees that — so the
+// path length is exact arithmetic rather than a guess. It has to be: a path
+// may contain spaces and the header carries no other delimiter. Non-ASCII
+// bytes arrive verbatim because the runner turns core.quotepath off.
+func headerPath(s string) string {
+	// len(s) == len("a/") + n + len(" b/") + n
+	n := (len(s) - 5) / 2
+	if n <= 0 || len(s) != 2*n+5 {
+		return s
+	}
+	if s[:2] != "a/" || s[2+n:5+n] != " b/" || s[2:2+n] != s[5+n:] {
+		// git c-quotes a path containing a newline or a double quote whatever
+		// core.quotepath says, and that breaks the arithmetic. Showing the
+		// header as git wrote it beats showing half a decoded path.
+		//
+		// ponytail: no c-unquoter here; write one if such a path ever turns up.
+		return s
+	}
+	return s[2 : 2+n]
+}

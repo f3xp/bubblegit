@@ -3,6 +3,9 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,8 +53,135 @@ func (h *harness) send(msg tea.Msg) tea.Cmd {
 func (h *harness) press(keys ...string) {
 	h.t.Helper()
 	for _, k := range keys {
-		h.send(tea.KeyPressMsg{Code: rune(k[0]), Text: k})
+		h.key(k)
 	}
+}
+
+// key presses one key and hands back whatever command it produced, so a test
+// can choose to run the git call rather than only observe the model.
+func (h *harness) key(k string) tea.Cmd {
+	h.t.Helper()
+	if k == " " {
+		return h.send(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	}
+	return h.send(tea.KeyPressMsg{Code: rune(k[0]), Text: k})
+}
+
+// run drives a command and everything it leads to until the model is quiet.
+//
+// One action is several round trips — an apply reloads the status, which
+// reloads the diff — and a test that ran only the first would assert against a
+// model that has not caught up yet. A commit fans out rather than chaining,
+// reloading HEAD and the status side by side, so the pending work is a queue
+// and a tea.Batch is unwrapped rather than delivered as a message.
+func (h *harness) run(cmd tea.Cmd) {
+	h.t.Helper()
+	if cmd == nil {
+		h.t.Fatal("the key produced no command")
+	}
+	queue := []tea.Cmd{cmd}
+	for range 20 {
+		if len(queue) == 0 {
+			return
+		}
+		cmd, queue = queue[0], queue[1:]
+		msg := cmd()
+		// tea.Batch hands back the commands themselves rather than a message.
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		if next := h.send(msg); next != nil {
+			queue = append(queue, next)
+		}
+	}
+	h.t.Fatal("the model never settled")
+}
+
+// typeText enters a message the way the user would, one key at a time, so the
+// test exercises the same routing a real keystroke takes.
+func (h *harness) typeText(s string) {
+	h.t.Helper()
+	for _, r := range s {
+		if r == '\n' {
+			h.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+			continue
+		}
+		h.send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+}
+
+func (h *harness) esc() tea.Cmd {
+	h.t.Helper()
+	return h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
+}
+
+// confirm is the commit key, which is deliberately not enter.
+func (h *harness) confirm() tea.Cmd {
+	h.t.Helper()
+	return h.send(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+}
+
+// selectFile moves the file cursor onto path and loads its diff.
+func (h *harness) selectFile(path string) {
+	h.t.Helper()
+	for h.m.SelectedPath() != path {
+		before := h.m.SelectedPath()
+		h.press("j")
+		if h.m.SelectedPath() == before {
+			h.t.Fatalf("%s is not in the file list", path)
+		}
+	}
+	h.resolveDiff()
+}
+
+// focusRightOn moves the diff cursor onto the first row matching kind and text.
+// Tests name the line they mean; a row offset would move with the fixture.
+func (h *harness) focusRightOn(kind git.LineKind, text string) {
+	h.t.Helper()
+	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
+
+	fd, _, _, ok := h.m.diff.Selection()
+	if !ok {
+		h.t.Fatal("the diff pane has no cursor")
+	}
+	for range countRows(fd) {
+		_, hunk, line, _ := h.m.diff.Selection()
+		if line >= 0 {
+			if l := fd.Hunks[hunk].Lines[line]; l.Kind == kind && l.Text == text {
+				return
+			}
+		}
+		h.press("j")
+	}
+	h.t.Fatalf("no %c%q row in the diff", kind, text)
+}
+
+func countRows(fd git.FileDiff) int {
+	n := 0
+	for _, h := range fd.Hunks {
+		n += 1 + len(h.Lines)
+	}
+	return n
+}
+
+// write puts content in the working tree, for the cases the fixture cannot
+// carry ready-made.
+func (h *harness) write(path, content string) {
+	h.t.Helper()
+	if err := os.WriteFile(filepath.Join(h.r.Dir, path), []byte(content), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// stagedContent is what the index now holds for a path.
+func (h *harness) stagedContent(path string) string {
+	h.t.Helper()
+	out, err := h.r.Run(context.Background(), "show", ":"+path)
+	if err != nil {
+		h.t.Fatalf("show :%s: %v", path, err)
+	}
+	return string(out)
 }
 
 // resolveDiff fetches the real diff for the current selection and delivers it
@@ -62,8 +192,7 @@ func (h *harness) resolveDiff() {
 	if !ok {
 		h.t.Fatal("nothing selected")
 	}
-	staged := sel.IsStaged() && !sel.IsUnstaged()
-	d, err := git.DiffFile(context.Background(), h.r, sel.Path, staged, sel.IsUntracked())
+	d, err := git.DiffFile(context.Background(), h.r, sel.Path, h.m.stagedSide(), sel.IsUntracked())
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -181,26 +310,45 @@ func TestLayoutFitsTerminal(t *testing.T) {
 		{10, 2},
 		{1, 1}, // degenerate
 	}
-	for _, sz := range sizes {
-		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
-			m := New(t.TempDir())
-			updated, _ := m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
-			m = updated.(Model)
-			m.files.SetFiles([]git.FileStatus{
-				{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "a-fairly-long-file-name.txt"},
-				{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "ünïcødé-ファイル.txt"},
-			})
+	// Both views, because each splits the terminal by a different fraction and
+	// the clamps have to hold for either one.
+	views := map[string]view{"status": viewStatus, "log": viewLog, "branches": viewBranches}
 
-			lines := strings.Split(m.Body(), "\n")
-			if len(lines) > sz.h {
-				t.Errorf("frame is %d rows for a %d-row terminal", len(lines), sz.h)
-			}
-			for i, l := range lines {
-				if w := ansi.StringWidth(l); w > sz.w {
-					t.Errorf("row %d is %d cells wide for a %d-column terminal: %q", i, w, sz.w, l)
+	for _, sz := range sizes {
+		for name, v := range views {
+			t.Run(fmt.Sprintf("%s/%dx%d", name, sz.w, sz.h), func(t *testing.T) {
+				m := New(t.TempDir())
+				m.view = v
+				updated, _ := m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
+				m = updated.(Model)
+				m.files.SetFiles([]git.FileStatus{
+					{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "a-fairly-long-file-name.txt"},
+					{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M', Path: "ünïcødé-ファイル.txt"},
+				})
+				m.log.SetCommits([]git.Commit{
+					{SHA: strings.Repeat("a", 40), Short: "aaaaaaa", Parents: []string{strings.Repeat("b", 40)},
+						Subject: "a subject long enough to need truncating somewhere"},
+					{SHA: strings.Repeat("b", 40), Short: "bbbbbbb",
+						Subject: "ünïcødé-ファイル in a commit subject"},
+				})
+				m.branches.SetBranches([]git.Branch{
+					{Name: "a-fairly-long-branch-name/with-a-slash", Current: true,
+						Upstream: "origin/main", Ahead: 12, Behind: 3,
+						Subject: "a subject long enough to need truncating somewhere"},
+					{Name: "ünïcødé-ブランチ", Subject: "ünïcødé-ファイル in a commit subject"},
+				})
+
+				lines := strings.Split(m.Body(), "\n")
+				if len(lines) > sz.h {
+					t.Errorf("frame is %d rows for a %d-row terminal", len(lines), sz.h)
 				}
-			}
-		})
+				for i, l := range lines {
+					if w := ansi.StringWidth(l); w > sz.w {
+						t.Errorf("row %d is %d cells wide for a %d-column terminal: %q", i, w, sz.w, l)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -245,5 +393,239 @@ func TestToggleStagedSwitchesSide(t *testing.T) {
 	h.resolveDiff()
 	if body := h.m.Body(); !strings.Contains(body, "(staged)") {
 		t.Errorf("the title does not say which side is shown:\n%s", body)
+	}
+}
+
+// TestStageLineFromDiffPane drives the whole M2 path: cursor onto one line of
+// a diff, stage key, real git apply, reload.
+func TestStageLineFromDiffPane(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+	h.focusRightOn(git.LineAdd, "18 edited")
+
+	h.run(h.key(" "))
+
+	staged := h.stagedContent("two-hunks.txt")
+	if !strings.Contains(staged, "18 edited") {
+		t.Errorf("the line under the cursor was not staged:\n%s", staged)
+	}
+	if strings.Contains(staged, "2 edited") {
+		t.Errorf("the other hunk was staged too:\n%s", staged)
+	}
+}
+
+// TestStageHunkKey checks the hunk key takes the whole hunk from a line inside
+// it, rather than needing the cursor on the header.
+func TestStageHunkKey(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+	h.focusRightOn(git.LineContext, "16")
+
+	h.run(h.key("a"))
+
+	staged := h.stagedContent("two-hunks.txt")
+	if !strings.Contains(staged, "18 edited") {
+		t.Errorf("the hunk containing the cursor was not staged:\n%s", staged)
+	}
+	if strings.Contains(staged, "2 edited") {
+		t.Errorf("the other hunk was staged too:\n%s", staged)
+	}
+}
+
+// TestStageOnContextLineDoesNothing: the stage key on a context line has
+// nothing to apply, and must not report an error for it either.
+func TestStageOnContextLineDoesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+	h.focusRightOn(git.LineContext, "16")
+
+	if cmd := h.key(" "); cmd != nil {
+		t.Fatal("the stage key on a context line issued a git command")
+	}
+	if body := h.m.Body(); strings.Contains(body, "git error") {
+		t.Errorf("a context line reported an error:\n%s", body)
+	}
+}
+
+func TestStageFileFromFilesPane(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("plain.txt")
+
+	h.run(h.key(" "))
+
+	if got := h.stagedContent("plain.txt"); !strings.Contains(got, "line3 dirty") {
+		t.Errorf("the whole file was not staged:\n%s", got)
+	}
+}
+
+// TestUnstageFollowsTheVisibleSide checks the stage key reverses when the pane
+// is showing the staged half. staged.txt has no worktree change, so it shows
+// its staged side without the toggle — and the key has to agree with the
+// title, not with the toggle.
+func TestUnstageFollowsTheVisibleSide(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("staged.txt")
+	if !h.m.stagedSide() {
+		t.Fatal("staged.txt should be showing its staged side")
+	}
+
+	h.run(h.key(" "))
+
+	if sel, _ := h.m.files.Selected(); !sel.IsUntracked() {
+		t.Errorf("staged.txt is %c%c, want untracked after un-staging", sel.Staged, sel.Unstaged)
+	}
+}
+
+// TestPartialNoEOLIsRefused: staging one line of a hunk with no trailing
+// newline produces a patch git applies happily and wrongly, so it has to be
+// refused visibly rather than silently corrupting the index.
+func TestPartialNoEOLIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("noeol.txt")
+	h.focusRightOn(git.LineAdd, "no trailing newline, edited")
+
+	if cmd := h.key(" "); cmd != nil {
+		t.Fatal("a partial no-EOL selection was sent to git apply")
+	}
+	if body := h.m.Body(); !strings.Contains(body, "whole hunk") {
+		t.Errorf("the refusal is not visible:\n%s", body)
+	}
+}
+
+// TestStageKeyIgnoredWhileApplying guards the in-flight window. Holding the
+// key builds every patch from the diff on screen, which the first apply has
+// already invalidated.
+func TestStageKeyIgnoredWhileApplying(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+	h.focusRightOn(git.LineAdd, "18 edited")
+
+	if cmd := h.key(" "); cmd == nil {
+		t.Fatal("the first stage key produced no command")
+	}
+	if !h.m.applying {
+		t.Fatal("the first stage key did not mark an apply in flight")
+	}
+	if cmd := h.key(" "); cmd != nil {
+		t.Error("a second stage key was accepted while the first was in flight")
+	}
+}
+
+// TestDiffCursorStaysPutAcrossReload: staging a hunk reloads the same file, and
+// the cursor has to survive it or every keystroke walks back to the top.
+func TestDiffCursorStaysPutAcrossReload(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+	h.focusRightOn(git.LineAdd, "18 edited")
+
+	_, _, before, _ := h.m.diff.Selection()
+	h.m.diff.SetLoading("two-hunks.txt")
+	h.resolveDiff()
+
+	if _, _, after, _ := h.m.diff.Selection(); after != before {
+		t.Errorf("cursor moved to line %d across a reload, want %d", after, before)
+	}
+}
+
+// TestStageIsRefusedWhileTheDiffIsLoading closes the window between a diff
+// request and its answer. The pane still shows the previous file, so a stage
+// key that trusted it would build a patch for the wrong path and git would
+// apply it without complaint.
+func TestStageIsRefusedWhileTheDiffIsLoading(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+	h.focusRightOn(git.LineAdd, "18 edited")
+
+	// Move to another file without answering the diff request it issues.
+	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
+	h.press("k")
+	if h.m.SelectedPath() == "two-hunks.txt" {
+		t.Fatal("the selection did not move")
+	}
+	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
+
+	if cmd := h.key(" "); cmd != nil {
+		t.Error("a stage key was accepted against a diff that had not arrived")
+	}
+	if _, _, _, ok := h.m.diff.Selection(); ok {
+		t.Error("the pane still offers rows from the previous file")
+	}
+}
+
+// TestWholeFileOnly pins the changes that must not be split into a patch.
+// Each of them produces a patch git accepts and gets wrong, so the fallback to
+// `git add` is a correctness guard, not a convenience.
+func TestWholeFileOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		file   git.FileStatus
+		staged bool
+		want   bool
+	}{
+		{"worktree modification", git.FileStatus{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'M'}, false, false},
+		{"staged modification", git.FileStatus{Kind: git.KindOrdinary, Staged: 'M', Unstaged: '.'}, true, false},
+		{"worktree deletion", git.FileStatus{Kind: git.KindOrdinary, Staged: '.', Unstaged: 'D'}, false, true},
+		{"staged deletion", git.FileStatus{Kind: git.KindOrdinary, Staged: 'D', Unstaged: '.'}, true, true},
+		// A deletion on the side that is not being staged is somebody else's
+		// problem; the visible side is still an ordinary edit.
+		{"deletion on the other side", git.FileStatus{Kind: git.KindOrdinary, Staged: 'D', Unstaged: 'M'}, false, false},
+		{"untracked", git.FileStatus{Kind: git.KindUntracked}, false, false},
+		{"conflict", git.FileStatus{Kind: git.KindUnmerged, Staged: 'U', Unstaged: 'U'}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wholeFileOnly(tc.file, tc.staged); got != tc.want {
+				t.Errorf("wholeFileOnly(%+v, %v) = %v, want %v", tc.file, tc.staged, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPartialStageOfUntrackedFile walks the path where the diff's base changes
+// under the pane. An untracked file is diffed against /dev/null because it has
+// no index entry; staging one line of it gives it one, so the rest has to be
+// diffed against the index instead. Getting that wrong re-offers the whole file
+// as an addition and builds the next patch against the wrong base.
+func TestPartialStageOfUntrackedFile(t *testing.T) {
+	h := newHarness(t)
+	// Three lines, so staging one leaves something behind to diff. The
+	// fixture's untracked.txt is a single line, where partial and whole are
+	// the same thing.
+	h.write("untracked.txt", "u1\nu2\nu3\n")
+	h.run(h.m.loadStatus())
+
+	h.selectFile("untracked.txt")
+	if sel, _ := h.m.files.Selected(); !sel.IsUntracked() {
+		t.Fatal("untracked.txt should start with no index entry")
+	}
+	h.focusRightOn(git.LineAdd, "u2")
+
+	h.run(h.key(" "))
+
+	if sel, _ := h.m.files.Selected(); sel.IsUntracked() {
+		t.Fatal("untracked.txt is still reported as untracked after acquiring an index entry")
+	}
+	if got, want := h.stagedContent("untracked.txt"), "u2\n"; got != want {
+		t.Errorf("index holds %q, want %q", got, want)
+	}
+
+	// The remaining two lines have to arrive as additions on top of the index,
+	// not as the whole file against /dev/null.
+	fd, _, _, ok := h.m.diff.Selection()
+	if !ok {
+		t.Fatal("the reloaded diff has no rows")
+	}
+	if fd.Untracked {
+		t.Error("the diff is still being taken against /dev/null")
+	}
+	var added []string
+	for _, hunk := range fd.Hunks {
+		for _, l := range hunk.Lines {
+			if l.Kind == git.LineAdd {
+				added = append(added, l.Text)
+			}
+		}
+	}
+	if want := []string{"u1", "u3"}; !slices.Equal(added, want) {
+		t.Errorf("the remaining diff adds %q, want %q", added, want)
 	}
 }
