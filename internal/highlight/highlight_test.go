@@ -50,6 +50,28 @@ func TestLine(t *testing.T) {
 	})
 }
 
+// TestForIsMemoised pins the cache rather than its effect. lexers.Match walks
+// every registered lexer's globs — about a millisecond — and it is reached once
+// per file of a commit and once per keystroke while a cursor moves down the
+// file list, so a lookup repeated per call is a stall the user feels rather
+// than a number a benchmark reports.
+//
+// A miss is cached as firmly as a hit: a file with no lexer at all is the one
+// that pays the whole walk before coming back empty.
+func TestForIsMemoised(t *testing.T) {
+	for _, path := range []string{"main.go", "a/deep/path/notes.noext"} {
+		if a, b := highlight.For(path), highlight.For(path); a != b {
+			t.Errorf("For(%q) returned two instances; the lexer lookup is being redone per call", path)
+		}
+	}
+
+	// Chroma matches on the base name and nothing else, which is what makes the
+	// base a sound cache key: two paths that share a filename share an answer.
+	if a, b := highlight.For("main.go"), highlight.For("internal/ui/main.go"); a != b {
+		t.Error("two paths with the same filename got different highlighters")
+	}
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
