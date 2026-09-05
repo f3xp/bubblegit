@@ -34,13 +34,25 @@ between them.
 toggles the diff between the worktree and the staged side, and the diff pane title says which
 side you are looking at.
 
-**Log (`2`).** The selected commit on the left, commits with a graph column on the right. It
+**Log (`2`).** The selected commit on the left, commits with a graph column and their ref
+labels on the right. It
 walks from HEAD, or from a branch when opened with `enter` from the branch view, in which case
 the pane title names the branch. `esc` goes back to the branch list, and `2` returns the log to
 HEAD. The
 commit is its message and its patch, highlighted the same way a working-tree diff is. A merge
 shows what it brought in over its first parent. The initial commit shows its whole tree. Nothing
 in this view writes, so the staging and commit keys do nothing here.
+
+The graph column reads as follows:
+
+| Glyph | Meaning |
+| --- | --- |
+| `●` | a commit |
+| `◆` | a merge |
+| `│` | a line of history passing this row |
+| `╮` `╭` | a merge pulling in a branch, which continues below |
+| `┤` `├` | a branch joining a line of history that is already drawn |
+| `(main)` | branches and tags on this commit, as `git log --decorate` prints them |
 
 **Branches (`3`).** The tip commit of the selected branch on the left, local branches on the
 right. The view opens on the branch you are on. Only local branches are listed, since a

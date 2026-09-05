@@ -21,6 +21,10 @@ var (
 
 	Selected = lipgloss.NewStyle().Background(lipgloss.Color("#43293a"))
 
+	// Ref colours the branch and tag names beside a commit in the log, the
+	// yellow git itself uses for decorations.
+	Ref = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
+
 	// Cursor colours the commit node in the log's graph column. It is not the
 	// selection: that is a whole row, drawn by SelectRow.
 	Cursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f5c2e7"))

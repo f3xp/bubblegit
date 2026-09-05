@@ -20,21 +20,24 @@ type Commit struct {
 	Author  string
 	When    time.Time
 	Parents []string
+	// Refs is git's decoration for the commit, as %D prints it: "HEAD -> main,
+	// origin/main, tag: v1". Empty when nothing points here.
+	Refs    string
 	Subject string
 }
 
 // IsMerge reports whether the commit has more than one parent.
 func (c Commit) IsMerge() bool { return len(c.Parents) > 1 }
 
-// logFormat is one record of six fields.
+// logFormat is one record of seven fields.
 //
-// Five %x00 rather than six: -z appends the last one itself as the record
-// terminator. A trailing %x00 here would emit an empty seventh field between
+// Six %x00 rather than seven: -z appends the last one itself as the record
+// terminator. A trailing %x00 here would emit an empty eighth field between
 // records and slide the whole parse off its stride.
-const logFormat = "%H%x00%h%x00%an%x00%aI%x00%P%x00%s"
+const logFormat = "%H%x00%h%x00%an%x00%aI%x00%P%x00%D%x00%s"
 
 // logFields is the stride parseLog counts in.
-const logFields = 6
+const logFields = 7
 
 // Log returns up to n commits, walking back from the given tips, or from HEAD
 // when there are none.
@@ -108,7 +111,8 @@ func parseLog(fields []string) []Commit {
 			Author:  fields[i+2],
 			When:    authorTime(fields[i+3]),
 			Parents: strings.Fields(fields[i+4]),
-			Subject: fields[i+5],
+			Refs:    fields[i+5],
+			Subject: fields[i+6],
 		})
 	}
 	return out

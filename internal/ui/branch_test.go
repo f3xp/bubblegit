@@ -371,9 +371,9 @@ func TestBranchLogScopesTheLogView(t *testing.T) {
 	if strings.Contains(rows, "merge feature into main") {
 		t.Errorf("the log scoped to `feature` still shows main's merge:\n%s", rows)
 	}
-	if !strings.Contains(rows, "add feature.txt") {
-		t.Errorf("the log scoped to `feature` is missing its own commit:\n%s", rows)
-	}
+	// Looked up through the model rather than the rendered rows: with the ref
+	// labels in front of it the subject does not survive a 38-column pane.
+	h.selectCommit("add feature.txt")
 	// The title is what licenses the scope existing at all: a log that changed
 	// which history it walked without saying so reads as a bug.
 	if title := h.m.listTitle(); title != "Log — feature (3)" {

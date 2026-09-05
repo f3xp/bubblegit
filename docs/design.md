@@ -87,6 +87,16 @@ A merge shows what it brought in over its first parent, which is usually why you
 commit. The initial commit shows its whole tree. Both of those render blank under the obvious
 git invocations.
 
+The graph column is drawn from the parent SHAs the log already carries, so it costs no extra
+git call. `git log --graph` was rejected: it imposes its own ordering and padding, and it does
+not compose with the `-z` cursor paging above. Each commit is one row; where it joins another
+lane — a merge pulling a branch in, or a branch's history continuing in a lane that is already
+open — the join is drawn as a horizontal run on that same row. Lanes are never compacted when
+one ends: a column means the same line of history all the way down the page, and closing the
+gap would slide every lane sideways mid-scroll. Only downward lines are drawn; when two commits
+share a timestamp git may list a parent above its child, and that link is left out rather than
+drawn to the wrong lane. Ref labels ride along on the same `git log` through `%D`.
+
 ## Branches
 
 Tracking state comes from one `git for-each-ref`. `%(upstream:track)` makes git count ahead and

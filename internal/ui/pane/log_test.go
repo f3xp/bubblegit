@@ -13,45 +13,62 @@ func commit(sha string, parents ...string) git.Commit {
 	return git.Commit{SHA: sha, Short: sha, Subject: sha, Parents: parents}
 }
 
-// TestGraphLanesFollowTopology walks the shape the fixture repository has: a
-// merge, a side branch, and the trunk they both came from.
-//
-//	D   merge of B and C
-//	|\
-//	B C
-//	|/
-//	A   root
-func TestGraphLanesFollowTopology(t *testing.T) {
-	rows := buildGraph([]git.Commit{
-		commit("D", "B", "C"),
-		commit("B", "A"),
-		commit("C", "A"),
-		commit("A"),
-	})
+// graphOf renders a topology as one string per row, so a test can state the
+// shape it expects and a failure prints the shape it got.
+func graphOf(commits ...git.Commit) []string {
+	rows := buildGraph(commits)
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = string(r.cells)
+	}
+	return out
+}
 
-	if len(rows) != 4 {
-		t.Fatalf("got %d rows, want 4", len(rows))
+// TestGraphDrawsConnectors states the whole graph for the shapes that matter:
+// the fixture repository's merge, a side branch that ends, a fork that rejoins
+// across a lane in between, and an octopus merge.
+func TestGraphDrawsConnectors(t *testing.T) {
+	cases := []struct {
+		name    string
+		commits []git.Commit
+		want    []string
+	}{
+		{
+			// D merges B and C; C forks from and rejoins A. The merge opens
+			// lane 1 on its own row, and C's row runs back into lane 0, where
+			// A is waiting, instead of drawing two disconnected columns.
+			name:    "fixture",
+			commits: []git.Commit{commit("D", "B", "C"), commit("B", "A"), commit("C", "A"), commit("A")},
+			want:    []string{"◆╮", "●│", "├●", "● "},
+		},
+		{
+			// C is a root on a side branch: its lane ends, the trunk keeps
+			// its column, and the free column is not closed up.
+			name:    "side branch ends",
+			commits: []git.Commit{commit("E", "D", "C"), commit("D", "B"), commit("C"), commit("B", "A"), commit("A")},
+			want:    []string{"◆╮", "●│", "│●", "● ", "● "},
+		},
+		{
+			// N is a second head in lane 2 whose history rejoins the trunk
+			// while lane 1 is still live, so the horizontal run crosses it.
+			name: "rejoin across a lane",
+			commits: []git.Commit{
+				commit("M", "A", "X"), commit("N", "P"), commit("X", "Y"),
+				commit("A", "R"), commit("P", "R"), commit("R"), commit("Y"),
+			},
+			want: []string{"◆╮", "││●", "│●│", "●││", "├┼●", "●│ ", " ● "},
+		},
+		{
+			name:    "octopus",
+			commits: []git.Commit{commit("M", "A", "B", "C"), commit("A"), commit("B"), commit("C")},
+			want:    []string{"◆┬╮", "●││", " ●│", "  ●"},
+		},
 	}
-	if !rows[0].merge {
-		t.Error("the merge commit is not marked as one")
-	}
-	if rows[0].col != 0 || rows[1].col != 0 {
-		t.Errorf("the merge and its first parent are in lanes %d and %d, want both in 0",
-			rows[0].col, rows[1].col)
-	}
-	// The second parent has to get a lane of its own, or the side branch is
-	// drawn on top of the trunk and the graph claims a history that never
-	// happened.
-	if rows[2].col == rows[1].col {
-		t.Errorf("the side branch shares lane %d with the trunk", rows[2].col)
-	}
-	// Both lanes converge on the root, and only one of them may keep drawing.
-	// The other has to end, or it trails a line down past the last commit.
-	if got := len(rows[3].lanes); got != 2 {
-		t.Fatalf("the root row has %d lanes, want 2", got)
-	}
-	if rows[3].lanes[0] && rows[3].lanes[1] {
-		t.Error("both lanes are still live at the root; one never terminated")
+	for _, tc := range cases {
+		got := graphOf(tc.commits...)
+		if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+			t.Errorf("%s:\ngot\n%s\nwant\n%s", tc.name, strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
+		}
 	}
 }
 
@@ -92,8 +109,8 @@ func TestGraphHandlesUnloadedParents(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
-	if !rows[1].lanes[rows[1].col] {
-		t.Error("the last row's lane is not drawn")
+	if got := string(rows[1].cells); got != "●" {
+		t.Errorf("the last row draws %q, want its node with the lane still open", got)
 	}
 }
 

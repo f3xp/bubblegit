@@ -201,13 +201,16 @@ func TestCommitInvalidatesLog(t *testing.T) {
 		t.Errorf("the log holds %d commits, want %d; it was not re-read",
 			h.m.log.Len(), before+1)
 	}
-	if !strings.Contains(ansi.Strip(h.m.Body()), "a new commit") {
-		t.Errorf("the commit just made is not in the log:\n%s", ansi.Strip(h.m.Body()))
-	}
 	// The cursor stayed on the commit it was on, which is now one row further
 	// down, rather than jumping to the new HEAD.
 	if h.m.log.SelectedSHA() == "" {
 		t.Error("the log lost its selection across the reload")
+	}
+	// Checked through the model rather than the rendered rows: behind its
+	// `(HEAD -> main)` label the subject does not survive a 38-column pane.
+	h.m.log.Top()
+	if c, _ := h.m.log.Selected(); c.Subject != "a new commit" {
+		t.Errorf("the top of the log is %q, want the commit just made", c.Subject)
 	}
 }
 

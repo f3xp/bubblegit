@@ -40,11 +40,11 @@ type Log struct {
 }
 
 // graphRow is one commit's place in the lane graph: the column its node sits
-// in, and which columns have a line passing through on that row.
+// in, and one glyph per lane — the node itself, a line passing by, or the
+// connector that joins the node to another lane on this row.
 type graphRow struct {
 	col   int
-	lanes []bool
-	merge bool
+	cells []rune
 }
 
 func (l *Log) SetSize(w, h int) { l.width, l.height = w, h; l.clampOffset() }
@@ -212,8 +212,12 @@ func (l *Log) row(i int) string {
 
 	line := l.graphCell(i) + " " +
 		theme.Meta.Render(c.Short) + " " +
-		theme.Dim.Render(c.When.Format(dateFormat)) + " " +
-		c.Subject
+		theme.Dim.Render(c.When.Format(dateFormat)) + " "
+	// Refs go before the subject, where git, tig and lazygit put them.
+	if c.Refs != "" {
+		line += theme.Ref.Render("("+c.Refs+")") + " "
+	}
+	line += c.Subject
 
 	// Truncate on display width, not byte length: the line carries ANSI
 	// escapes and a subject may contain wide characters.
@@ -238,29 +242,98 @@ func (l *Log) graphCell(i int) string {
 	}
 	g := l.graph[i]
 
-	n := len(g.lanes)
-	if n > maxLanes {
-		n = maxLanes
-	}
-	col := g.col
-	if col >= n {
-		col = n - 1
+	cells := g.cells
+	if len(cells) > maxLanes {
+		clipped := make([]rune, maxLanes)
+		copy(clipped, cells)
+		if g.col >= maxLanes {
+			// The node is past the cap: draw it in the last visible column so
+			// the row still shows a commit, whatever lane it really sits in.
+			clipped[maxLanes-1] = cells[g.col]
+		}
+		cells = clipped
 	}
 
 	var b strings.Builder
-	for j := 0; j < n; j++ {
-		switch {
-		case j == col && g.merge:
-			b.WriteString(theme.Meta.Render("◆"))
-		case j == col:
-			b.WriteString(theme.Cursor.Render("●"))
-		case g.lanes[j]:
-			b.WriteString(theme.Dim.Render("│"))
+	for _, r := range cells {
+		switch r {
+		case nodeMerge:
+			b.WriteString(theme.Meta.Render(string(r)))
+		case nodeCommit:
+			b.WriteString(theme.Cursor.Render(string(r)))
+		case ' ':
+			b.WriteByte(' ')
 		default:
-			b.WriteString(" ")
+			b.WriteString(theme.Dim.Render(string(r)))
 		}
 	}
 	return b.String()
+}
+
+const (
+	nodeCommit = '●'
+	nodeMerge  = '◆'
+)
+
+// boxGlyphs is indexed by which sides of a cell carry a line: bit 0 up, bit 1
+// down, bit 2 left, bit 3 right. A lane passing by is up+down, a merge opening
+// a lane to its right is down+left, and so on.
+var boxGlyphs = []rune(" ╵╷│╴╯╮┤╶╰╭├─┴┬┼")
+
+func boxGlyph(up, down, left, right bool) rune {
+	i := 0
+	if up {
+		i |= 1
+	}
+	if down {
+		i |= 2
+	}
+	if left {
+		i |= 4
+	}
+	if right {
+		i |= 8
+	}
+	return boxGlyphs[i]
+}
+
+// drawCells lays out one row: the node in its column, the lanes live above
+// (in) and below (out) it, and a horizontal run from the node to every lane
+// it connects to on this row. Everything the row shows is derived here, so
+// the renderer only has to colour glyphs.
+func drawCells(col int, merge bool, in, out []bool, targets []int) []rune {
+	lo, hi := col, col
+	for _, t := range targets {
+		if t < lo {
+			lo = t
+		}
+		if t > hi {
+			hi = t
+		}
+	}
+
+	cells := make([]rune, len(out))
+	for j := range cells {
+		if j == col {
+			if merge {
+				cells[j] = nodeMerge
+			} else {
+				cells[j] = nodeCommit
+			}
+			continue
+		}
+		up := j < len(in) && in[j]
+		cells[j] = boxGlyph(up, out[j], j > lo && j <= hi, j >= lo && j < hi)
+	}
+	return cells
+}
+
+func live(lanes []string) []bool {
+	out := make([]bool, len(lanes))
+	for i, s := range lanes {
+		out[i] = s != ""
+	}
+	return out
 }
 
 // buildGraph assigns each commit a lane.
@@ -289,39 +362,54 @@ func buildGraph(commits []git.Commit) []graphRow {
 			lanes[col] = c.SHA
 		}
 
-		// Snapshot before reassigning: this row shows the commit in its lane
-		// plus every other lane passing it by, which is the state on the way
-		// in, not the state on the way out.
-		active := make([]bool, len(lanes))
-		for j, s := range lanes {
-			active[j] = s != ""
-		}
-		rows[i] = graphRow{col: col, lanes: active, merge: c.IsMerge()}
+		// Snapshot before reassigning: the lanes live on the way into this
+		// row are what is drawn above the node, and the state on the way out
+		// is what is drawn below it.
+		in := live(lanes)
 		drawn[c.SHA] = true
+
+		// targets are the lanes this node connects to sideways on its own
+		// row: the lane its history continues in when that lane is already
+		// open, and every lane a merge pulls in.
+		var targets []int
 
 		switch {
 		case len(c.Parents) == 0:
 			// A root commit ends its lane.
 			lanes[col] = ""
-		case drawn[c.Parents[0]] || laneOf(lanes, c.Parents[0]) >= 0:
-			// The parent is already drawn above, or another lane is already
-			// waiting for it. Either way this lane's continuation is upward or
-			// sideways, and only downward lines are drawn, so it ends here.
-			// Left open it would trail a bar past the bottom of the log
-			// claiming a line of history that has already been shown.
+		case drawn[c.Parents[0]]:
+			// The parent is already drawn above. The continuation is upward,
+			// and only downward lines are drawn, so the lane ends here. Left
+			// open it would trail a bar past the bottom of the log claiming a
+			// line of history that has already been shown.
+			lanes[col] = ""
+		case laneOf(lanes, c.Parents[0]) >= 0:
+			// Another lane is already waiting for the parent: this commit's
+			// history joins it, drawn as a horizontal run into that lane.
+			targets = append(targets, laneOf(lanes, c.Parents[0]))
 			lanes[col] = ""
 		default:
 			lanes[col] = c.Parents[0]
 		}
 
 		// A merge's remaining parents open lanes of their own, unless they are
-		// spoken for. Indexed rather than sliced from 1: a root commit has no
-		// parents at all, and Parents[1:] panics on it.
+		// spoken for; either way the merge connects to them. Indexed rather
+		// than sliced from 1: a root commit has no parents at all, and
+		// Parents[1:] panics on it.
 		for i := 1; i < len(c.Parents); i++ {
-			if p := c.Parents[i]; !drawn[p] && laneOf(lanes, p) < 0 {
-				lanes[freeLane(&lanes)] = p
+			p := c.Parents[i]
+			if drawn[p] {
+				continue
 			}
+			k := laneOf(lanes, p)
+			if k < 0 {
+				k = freeLane(&lanes)
+				lanes[k] = p
+			}
+			targets = append(targets, k)
 		}
+
+		rows[i] = graphRow{col: col, cells: drawCells(col, c.IsMerge(), in, live(lanes), targets)}
 	}
 	return rows
 }

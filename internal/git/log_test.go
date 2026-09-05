@@ -38,6 +38,8 @@ func TestLogReadsEveryField(t *testing.T) {
 		t.Errorf("subject %q, want the merge subject", head.Subject)
 	case !head.IsMerge():
 		t.Errorf("HEAD has %d parents, want a merge", len(head.Parents))
+	case !strings.Contains(head.Refs, "HEAD -> main"):
+		t.Errorf("refs %q do not name HEAD -> main", head.Refs)
 	}
 
 	// The root commit's empty parent field is the case that breaks a parser
@@ -49,6 +51,11 @@ func TestLogReadsEveryField(t *testing.T) {
 	}
 	if root.Subject == "" {
 		t.Error("the record after the empty parent field did not survive the stride")
+	}
+	// The `behind` branch is the only ref on the root, so a decoration that
+	// carried anything else would mean the stride slid here as well.
+	if root.Refs != "behind" {
+		t.Errorf("root commit is decorated %q, want behind", root.Refs)
 	}
 }
 
