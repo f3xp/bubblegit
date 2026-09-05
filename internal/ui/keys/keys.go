@@ -107,3 +107,60 @@ func Matches(binding []string, key string) bool {
 	}
 	return false
 }
+
+// Binding pairs a keymap field with the text the help popup shows for it.
+type Binding struct {
+	Keys []string
+	Desc string
+}
+
+// Bindings returns the keys in the order the help popup lists them, in groups
+// of what they act on. The grouping is the popup's layout unit: it breaks
+// between groups rather than mid-group, so a column never starts halfway
+// through the motions.
+//
+// It is a hand-written table rather than reflection over Map: field names are
+// identifiers, not descriptions, so the text has to be written out either way
+// — and keeping it in this file means a new binding and its description land
+// in the same diff.
+func (m Map) Bindings() [][]Binding {
+	return [][]Binding{
+		{
+			{m.Up, "up"},
+			{m.Down, "down"},
+			{m.Left, "left / collapse"},
+			{m.Right, "right / expand"},
+			{m.Top, "top"},
+			{m.Bottom, "bottom"},
+			{m.PageUp, "page up"},
+			{m.PageDown, "page down"},
+		},
+		{
+			{m.NextPane, "next pane"},
+			{m.PrevPane, "previous pane"},
+		},
+		{
+			{m.Stage, "stage / unstage"},
+			{m.StageHunk, "stage / unstage hunk"},
+			{m.ToggleStaged, "toggle staged diff"},
+		},
+		{
+			{m.Commit, "commit"},
+			{m.Amend, "amend HEAD"},
+			{m.Confirm, "confirm (in editor)"},
+			{m.Cancel, "cancel (in editor)"},
+		},
+		{
+			{m.Branch, "checkout branch"},
+		},
+		{
+			{m.StatusView, "status view"},
+			{m.LogView, "log view"},
+			{m.BranchView, "branch view"},
+		},
+		{
+			{m.Help, "this help"},
+			{m.Quit, "quit"},
+		},
+	}
+}

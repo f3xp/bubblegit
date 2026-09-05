@@ -235,6 +235,11 @@ type Model struct {
 	// narrow drops to a single pane when there is not room for two.
 	narrow bool
 	ready  bool
+
+	// showHelp draws the keybinding popup over the panes. It is a mode like
+	// the editor is a mode — while it is up it owns the keyboard — but a
+	// read-only one, so any key dismisses it rather than only an escape.
+	showHelp bool
 }
 
 func New(root string) Model {
@@ -573,6 +578,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 
+	// The help popup is read-only, so it does not need its own bindings: the
+	// next key puts it away, whatever it was. Swallowing that key rather than
+	// acting on it too keeps `j` from scrolling a list the popup is covering.
+	// ctrl+c is the exception, for the same reason the editor makes it one.
+	if m.showHelp {
+		if k == "ctrl+c" {
+			return m, tea.Quit
+		}
+		m.showHelp = false
+		return m, nil
+	}
+
 	// The message editor is a mode, and while it is open it owns every key:
 	// `q` types a q, `space` types a space, `t` types a t. This is the one
 	// place the flat key dispatch has to branch before it reaches the
@@ -584,6 +601,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case keys.Matches(m.keys.Quit, k):
 		return m, tea.Quit
+
+	// Below the editor guard, not above it: `?` is an ordinary character in a
+	// commit message.
+	case keys.Matches(m.keys.Help, k):
+		m.showHelp = true
+		return m, nil
 
 	case keys.Matches(m.keys.StatusView, k):
 		return m.setView(viewStatus)
@@ -1083,8 +1106,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	// The message editor replaces both panes rather than sitting beside them,
 	// so while it is open there is nothing under the pointer to click. It owns
-	// the mouse for the same reason it owns every key.
-	if m.commit.Active() {
+	// the mouse for the same reason it owns every key. The help popup covers
+	// the middle of the frame, including the splitter, so it does the same.
+	if m.commit.Active() || m.showHelp {
 		return m, nil
 	}
 
@@ -1419,7 +1443,31 @@ func (m Model) body() string {
 		panes,
 	)
 	// Last line of defence: never hand the terminal more rows than it has.
-	return lipgloss.NewStyle().MaxHeight(m.height).MaxWidth(m.width).Render(frame)
+	base := lipgloss.NewStyle().MaxHeight(m.height).MaxWidth(m.width).Render(frame)
+	if m.showHelp {
+		return m.withHelp(base)
+	}
+	return base
+}
+
+// withHelp composes the keybinding popup over an already-rendered frame.
+//
+// A canvas rather than a pane swap: the popup is a popup, and the point of one
+// is that the panes stay visible around it. Note that Canvas.Render trims
+// trailing whitespace, which is why this is reached only when the popup is up.
+func (m Model) withHelp(base string) string {
+	popup := helpView(m.keys, m.width-4, m.height-4)
+	if popup == "" {
+		return base
+	}
+	x := max((m.width-lipgloss.Width(popup))/2, 0)
+	y := max((m.height-lipgloss.Height(popup))/2, 0)
+	return lipgloss.NewCanvas(m.width, m.height).Compose(
+		lipgloss.NewCompositor(
+			lipgloss.NewLayer(base),
+			lipgloss.NewLayer(popup).X(x).Y(y).Z(1),
+		),
+	).Render()
 }
 
 // listTitle and docTitle name whichever pane the current view puts in each
@@ -1487,7 +1535,7 @@ func (m Model) header() string {
 	case ref == "":
 		ref = "loading…"
 	}
-	return theme.Title.Render(ref) + theme.TitleDim.Render("  "+filepath.Base(m.root))
+	return theme.Title.Render(filepath.Base(m.root)) + theme.TitleDim.Render("  ⎇ "+ref)
 }
 
 // framed draws a pane at an exact size.
