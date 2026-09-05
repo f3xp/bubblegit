@@ -169,7 +169,7 @@ func (b *Branches) row(i int) string {
 		line = ansi.Truncate(line, b.width, "…")
 	}
 	if i == b.cursor {
-		return theme.Selected.Width(b.width).Render(line)
+		return theme.SelectRow(line, b.width)
 	}
 	return lipgloss.NewStyle().Width(b.width).Render(line)
 }

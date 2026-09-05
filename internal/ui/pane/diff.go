@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/viewport"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/f3xp/bubblegit/internal/git"
 	"github.com/f3xp/bubblegit/internal/highlight"
@@ -253,25 +255,31 @@ func (d *Diff) View() string {
 		return theme.Dim.Render(d.empty)
 	}
 
-	// The cursor is a marker column, not a highlighted row.
+	// The cursor is the whole row, under the same background the file list
+	// uses. renderLine has already rewritten the resets inside each line so
+	// that the background survives them; without that the row would light up
+	// only as far as its first coloured token.
 	//
-	// A background style would be the obvious choice and does not survive the
-	// content: every rendered fragment ends in a reset — lipgloss's own, and
-	// chroma's \x1b[0m after each highlighted token — which closes the
-	// background partway along, so the gutter and the trailing padding light up
-	// and the code between them does not. A gutter column is drawn separately
-	// from the line, so nothing in the line can cancel it, and the viewport
-	// keeps it in place when the diff is scrolled sideways.
+	// Inline, because Width on its own word-wraps, and a wrapped row would
+	// desynchronise the viewport's one-line-per-index mapping. The padding runs
+	// past the width by the horizontal offset, which the viewport's cut to the
+	// visible columns then takes back off the front; the offset is zero until
+	// sideways scrolling is bound to a key.
 	//
 	// The closure captures the row number by value: Model is copied on every
 	// Update, so one holding a pointer into this struct would mark a row
 	// several keystrokes stale.
 	cursor := d.cursor
-	d.vp.LeftGutterFunc = func(g viewport.GutterContext) string {
-		if g.Index == cursor {
-			return theme.Cursor.Render("▌")
+	// An empty style leaves the row untouched, which is the point: an unselected
+	// row is closed by the reset renderLine put at its end, not by anything
+	// here.
+	plain := lipgloss.NewStyle()
+	selected := theme.Selected.Inline(true).Width(d.vp.Width() + d.vp.XOffset())
+	d.vp.StyleLineFunc = func(i int) lipgloss.Style {
+		if i == cursor {
+			return selected
 		}
-		return " "
+		return plain
 	}
 	return d.vp.View()
 }
@@ -303,7 +311,7 @@ func renderLines(fd git.FileDiff) ([]string, []rowRef) {
 	var lines []string
 	var rows []rowRef
 	for hi, h := range fd.Hunks {
-		lines = append(lines, theme.Meta.Render(h.Header))
+		lines = append(lines, keepBackground(theme.Meta.Render(h.Header)))
 		rows = append(rows, rowRef{hunk: hi, line: -1})
 		for li, l := range h.Lines {
 			lines = append(lines, renderLine(hl, l))
@@ -313,9 +321,23 @@ func renderLines(fd git.FileDiff) ([]string, []rowRef) {
 	return lines, rows
 }
 
+// keepBackground makes one finished row survive being wrapped in a background
+// by the selection, and closes it off again at the end.
+//
+// The rewrite is done here rather than where the row is selected because the
+// viewport styles a row through a lipgloss.Style, which cannot reach inside the
+// string. Here it costs one pass per line, in the command goroutine that
+// already rendered the diff, rather than one per frame.
+//
+// The trailing reset is not decorative: with the interior resets rewritten,
+// nothing else closes the line's own colours.
+func keepBackground(row string) string {
+	return theme.KeepBackground(row) + ansi.ResetStyle
+}
+
 func renderLine(hl *highlight.Highlighter, l git.Line) string {
 	if l.Kind == git.LineNoEOL {
-		return theme.Dim.Render(strings.Repeat(" ", gutterWidth+1) + "\\ " + l.Text)
+		return keepBackground(theme.Dim.Render(strings.Repeat(" ", gutterWidth+1) + "\\ " + l.Text))
 	}
 
 	// Syntax-highlight the payload only. The +/- prefix is not part of the
@@ -339,7 +361,7 @@ func renderLine(hl *highlight.Highlighter, l git.Line) string {
 	// exactly this column.
 	gutter := num(l.OldNum) + " " + num(l.NewNum)
 
-	return theme.Dim.Render(gutter) + prefix + body
+	return keepBackground(theme.Dim.Render(gutter) + prefix + body)
 }
 
 func num(n int) string {

@@ -1,13 +1,17 @@
 // Package theme holds the shared lipgloss styles.
 package theme
 
-import "charm.land/lipgloss/v2"
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+)
 
 var (
 	Add     = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1"))
 	Del     = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8"))
 	Context = lipgloss.NewStyle().Foreground(lipgloss.Color("#cdd6f4"))
-	Meta    = lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa"))
+	Meta    = lipgloss.NewStyle().Foreground(lipgloss.Color("#f5c2e7"))
 	Dim     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))
 	Err     = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")).Bold(true)
 
@@ -15,23 +19,48 @@ var (
 	Staged   = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1"))
 	Unstaged = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
 
-	Selected = lipgloss.NewStyle().Background(lipgloss.Color("#313244"))
+	Selected = lipgloss.NewStyle().Background(lipgloss.Color("#43293a"))
 
-	// Cursor marks the diff row that staging acts on. It colours a glyph in the
-	// viewport's gutter rather than the row itself: a background cannot survive
-	// the resets the syntax highlighter leaves inside the line, and it has to
-	// out-read the file list's Selected, which stays visible beside it.
-	Cursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa"))
+	// Cursor colours the commit node in the log's graph column. It is not the
+	// selection: that is a whole row, drawn by SelectRow.
+	Cursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f5c2e7"))
 	Title    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#cdd6f4"))
 	TitleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))
 )
+
+// keepBG is a reset that leaves the background alone: default foreground, and
+// off for every attribute the two things that colour a row can turn on —
+// lipgloss, and chroma's terminal formatter, which emits bold, italic and
+// underline.
+const keepBG = "\x1b[22;23;24;27;29;39m"
+
+// KeepBackground rewrites the resets inside an already-styled line so that an
+// enclosing background survives them.
+//
+// Every styled fragment ends in a reset — lipgloss's \x1b[m and chroma's
+// \x1b[0m after each highlighted token — and a reset clears the background
+// along with the colour. So a row simply wrapped in Selected lights up only as
+// far as its first fragment, and then again across the trailing padding, which
+// lipgloss paints itself: one bright block, a dark row, and a bar at the end.
+// Resetting the foreground and the attributes but not the background leaves
+// the row whole.
+func KeepBackground(s string) string {
+	s = strings.ReplaceAll(s, "\x1b[0m", keepBG)
+	return strings.ReplaceAll(s, "\x1b[m", keepBG)
+}
+
+// SelectRow draws one row of a list under the selection background, across the
+// full width of the pane.
+func SelectRow(line string, width int) string {
+	return Selected.Width(width).Render(KeepBackground(line))
+}
 
 // Border returns the frame for a pane. The focused pane is the only one with
 // a bright border, so focus is readable without colour vision.
 func Border(focused bool) lipgloss.Style {
 	s := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 	if focused {
-		return s.BorderForeground(lipgloss.Color("#89b4fa"))
+		return s.BorderForeground(lipgloss.Color("#f5c2e7"))
 	}
-	return s.BorderForeground(lipgloss.Color("#45475a"))
+	return s.BorderForeground(lipgloss.Color("#5a4049"))
 }

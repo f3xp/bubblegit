@@ -221,7 +221,7 @@ func (l *Log) row(i int) string {
 		line = ansi.Truncate(line, l.width, "…")
 	}
 	if i == l.cursor {
-		return theme.Selected.Width(l.width).Render(line)
+		return theme.SelectRow(line, l.width)
 	}
 	return lipgloss.NewStyle().Width(l.width).Render(line)
 }

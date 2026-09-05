@@ -143,7 +143,7 @@ func (f *Files) row(i int) string {
 		line = ansi.Truncate(line, f.width, "…")
 	}
 	if i == f.cursor {
-		return theme.Selected.Width(f.width).Render(line)
+		return theme.SelectRow(line, f.width)
 	}
 	return lipgloss.NewStyle().Width(f.width).Render(line)
 }
