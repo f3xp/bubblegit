@@ -8,12 +8,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// In the status view of an 80-column terminal the left pane is 27 columns, so
-// the panes meet at columns 26 and 27 — the left pane's right border and the
-// right pane's left one. Both are the splitter.
+// In the status view of an 80-column terminal the left pane — the diff — is 52
+// columns, so the panes meet at columns 51 and 52: the left pane's right border
+// and the right pane's left one. Both are the splitter.
 const (
-	leftEdge  = 26
-	rightEdge = 27
+	leftEdge  = 51
+	rightEdge = 52
 )
 
 func (h *harness) drag(x, y int) tea.Cmd {
@@ -46,8 +46,8 @@ func TestSplitterTracksWhicheverColumnWasGrabbed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			if h.m.leftW != 27 {
-				t.Fatalf("the left pane starts at %d columns, want the fixture's 27", h.m.leftW)
+			if h.m.leftW != 52 {
+				t.Fatalf("the left pane starts at %d columns, want the fixture's 52", h.m.leftW)
 			}
 
 			if cmd := h.click(tc.grab, 10); cmd != nil {
@@ -76,7 +76,7 @@ func TestSplitterDragDoesNotTakeFocus(t *testing.T) {
 	h := newHarness(t)
 	h.click(rightEdge, 10)
 	if h.m.DiffFocused() {
-		t.Error("taking hold of the splitter focused the pane on its right")
+		t.Error("taking hold of the splitter focused the diff beside it")
 	}
 	if got := h.m.SelectedPath(); got != "logo.png" {
 		t.Errorf("taking hold of the splitter selected %q", got)
@@ -137,7 +137,7 @@ func TestSplitterIsPerView(t *testing.T) {
 	h.drag(30, 10)
 	h.release(30, 10)
 	if h.m.leftW != 30 {
-		t.Fatalf("the drag left the files pane %d columns wide, want 30", h.m.leftW)
+		t.Fatalf("the drag left the diff pane %d columns wide, want 30", h.m.leftW)
 	}
 
 	h.enterLog()
@@ -161,12 +161,12 @@ func TestSplitterKeysMoveTheBoundary(t *testing.T) {
 	h := newHarness(t)
 
 	h.press("l", "l", "l")
-	if h.m.leftW != 30 {
-		t.Errorf("three l left the pane %d columns wide, want 30", h.m.leftW)
+	if h.m.leftW != 55 {
+		t.Errorf("three l left the pane %d columns wide, want 55", h.m.leftW)
 	}
 	h.press("h")
-	if h.m.leftW != 29 {
-		t.Errorf("one h left the pane %d columns wide, want 29", h.m.leftW)
+	if h.m.leftW != 54 {
+		t.Errorf("one h left the pane %d columns wide, want 54", h.m.leftW)
 	}
 
 	// The frame still fits: layout() and framed() have to agree about the new
@@ -190,10 +190,10 @@ func TestSplitterKeysWorkWithoutBorders(t *testing.T) {
 	}
 
 	h.press("l")
-	if h.m.leftW != 28 {
-		t.Errorf("one l left the pane %d columns wide, want 28", h.m.leftW)
+	if h.m.leftW != 53 {
+		t.Errorf("one l left the pane %d columns wide, want 53", h.m.leftW)
 	}
-	if hit, _ := h.m.hitTest(27, 1); hit.splitter {
+	if hit, _ := h.m.hitTest(rightEdge, 1); hit.splitter {
 		t.Error("an unbordered layout offered a column to grab")
 	}
 }

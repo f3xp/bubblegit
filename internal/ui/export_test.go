@@ -11,7 +11,9 @@ func (m Model) SelectedPath() string {
 	return f.Path
 }
 
-func (m Model) DiffFocused() bool { return m.focus == focusRight }
+// DiffFocused reports whether the document pane — the diff, or the commit in
+// the log and branch views — has focus rather than the list.
+func (m Model) DiffFocused() bool { return m.focus == focusDoc }
 
 func (m Model) InLogView() bool { return m.view == viewLog }
 

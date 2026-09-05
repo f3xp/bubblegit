@@ -30,26 +30,33 @@ import (
 const gitTimeout = 30 * time.Second
 
 // splitDefaults is the fraction of the terminal the left pane starts with in
-// each view. The files pane takes the least: a row there carries a status code
-// and a path, where a log row carries a graph, a SHA, a date and a subject,
-// and a branch row a name, a tracking count, a date and a subject.
+// each view. It is a fraction of the left pane, not of the list: the status
+// view is the one that draws its list on the right, so its left pane is the
+// diff, and the diff takes the most. The file list wants the least of the three
+// lists anyway — a row there carries a status code and a path, where a log row
+// carries a graph, a SHA, a date and a subject, and a branch row a name, a
+// tracking count, a date and a subject.
 //
 // It is where each view starts, not where it stays: the splitter moves them.
 var splitDefaults = [...]float64{
-	viewStatus:   0.34,
+	viewStatus:   0.66,
 	viewLog:      0.5,
 	viewBranches: 0.5,
 }
 
 var errEmptyMessage = errors.New("empty commit message")
 
-// focus names the half of the screen taking keys, not a particular pane: each
-// view puts a different pair of panes into the same two slots.
+// focus names the role of the pane taking keys — a view's list, or the
+// document beside it — not a particular pane and not a side of the screen. Each
+// view puts a different pair of panes into the two roles, and decides for
+// itself which side each one is drawn on (see view.listOnRight). Everything
+// that routes a key or a click reasons in roles, so the same key means the same
+// thing in every view whichever way round the panes are.
 type focus int
 
 const (
-	focusLeft focus = iota
-	focusRight
+	focusList focus = iota
+	focusDoc
 )
 
 // view is which pair of panes is on screen.
@@ -64,6 +71,16 @@ const (
 	viewLog
 	viewBranches
 )
+
+// listOnRight reports which side a view draws its list on. It is the one place
+// a role becomes a side: layout(), body() and hitTest() consult it, and nothing
+// else knows.
+//
+// The status view is the odd one out. Its document is a diff, which is the
+// wider and the more-read pane of its pair, so it gets the left and the room;
+// a file row is a status code and a path and is content with what is left. The
+// log and branch views read left to right, list then commit.
+func (v view) listOnRight() bool { return v == viewStatus }
 
 type headMsg struct {
 	head git.Head
@@ -649,10 +666,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case keys.Matches(m.keys.NextPane, k), keys.Matches(m.keys.PrevPane, k):
-		if m.focus == focusLeft {
-			m.focus = focusRight
+		if m.focus == focusList {
+			m.focus = focusDoc
 		} else {
-			m.focus = focusLeft
+			m.focus = focusList
 		}
 		return m, nil
 	}
@@ -663,7 +680,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case viewBranches:
 		return m.handleBranchKey(k)
 	}
-	if m.focus == focusRight {
+	if m.focus == focusDoc {
 		return m.handleDiffKey(k)
 	}
 	return m.handleFilesKey(k)
@@ -673,14 +690,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // time it is asked for.
 //
 // The panes are re-sized because the two views split the terminal differently,
-// and focus returns to the left pane: the right one holds a different document
+// and focus returns to the list: the document pane holds a different document
 // after the switch, and leaving focus on it would scroll a pane the user has
 // not looked at yet.
 func (m Model) setView(v view) (tea.Model, tea.Cmd) {
 	if m.view == v {
 		return m, nil
 	}
-	m.view, m.focus = v, focusLeft
+	m.view, m.focus = v, focusList
 	m.layout()
 
 	// The log and branch views share one detail pane, so entering either has
@@ -708,7 +725,7 @@ func (m Model) setView(v view) (tea.Model, tea.Cmd) {
 // The staging bindings are simply absent here rather than guarded one by one:
 // nothing in this view is stageable, so there is no key for it to mean.
 func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
-	if m.focus == focusRight {
+	if m.focus == focusDoc {
 		return m.handleDetailKey(k)
 	}
 
@@ -784,7 +801,7 @@ func (m Model) handleDetailKey(k string) (tea.Model, tea.Cmd) {
 // absent for the same reason they are absent from the log view: there is
 // nothing in this view for them to mean.
 func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
-	if m.focus == focusRight {
+	if m.focus == focusDoc {
 		return m.handleDetailKey(k)
 	}
 
@@ -1130,13 +1147,13 @@ type mouseTarget interface {
 	MoveBy(n int)
 }
 
-// mouseMove moves the cursor of the pane in slot p and issues whatever re-read
+// mouseMove moves the cursor of the pane in role p and issues whatever re-read
 // the move implies. n is a body row when abs is set — a click — and a number
 // of rows to travel when it is not — a wheel notch.
 //
 // One function rather than one per event, because the part that will drift is
-// the mapping from a slot to a pane: two views put the same commit pane in the
-// right-hand slot and the third puts a diff there, and that belongs in one
+// the mapping from a role to a pane: two views put the same commit pane in the
+// document role and the third puts a diff there, and that belongs in one
 // place. The re-reads go through the same after*Move helpers the key path
 // uses, so a click pages the log and reloads the detail exactly as j does.
 func (m Model) mouseMove(p focus, n int, abs bool) (tea.Model, tea.Cmd) {
@@ -1148,7 +1165,7 @@ func (m Model) mouseMove(p focus, n int, abs bool) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if p == focusRight {
+	if p == focusDoc {
 		if m.view != viewStatus {
 			// The commit pane scrolls as a document and has no cursor, so a
 			// click on one of its rows means nothing beyond the focus it has
@@ -1177,7 +1194,7 @@ func (m Model) mouseMove(p focus, n int, abs bool) (tea.Model, tea.Cmd) {
 	return m, m.afterFilesMove(sel.Path)
 }
 
-// mouseHit is where a mouse event landed: which pane slot, and which row of
+// mouseHit is where a mouse event landed: which pane, by role, and which row of
 // that pane's body. row is -1 when the point is on the pane's chrome — its
 // border or its title — rather than on a content row, and splitter marks the
 // boundary between the two panes, which is a handle rather than either of them.
@@ -1193,15 +1210,17 @@ type mouseHit struct {
 // This is layout() read backwards, and the two have to agree: framed() draws a
 // pane as a border row, a title row, contentH() body rows and a closing border
 // row, and the left pane owns columns 0..leftW-1 with the right one taking the
-// rest. Every branch layout() has, this one has too — no border on a terminal
-// too short for one, a single full-width pane when there is no room for two —
-// which is why it is pinned by a table test rather than trusted.
+// rest. Which role owns which side is the view's call — listOnRight — and is
+// the one step here that differs per view. Every branch layout() has, this one
+// has too — no border on a terminal too short for one, a single full-width pane
+// when there is no room for two — which is why it is pinned by a table test
+// rather than trusted.
 func (m Model) hitTest(x, y int) (mouseHit, bool) {
 	if !m.ready || x < 0 || x >= m.width || y < headerH || y >= m.height {
 		return mouseHit{}, false
 	}
 
-	hit := mouseHit{pane: focusLeft, row: -1}
+	hit := mouseHit{pane: focusList, row: -1}
 
 	// The splitter is the two adjacent border columns where the panes meet,
 	// read from the absolute column before the right pane's offset comes off
@@ -1219,9 +1238,15 @@ func (m Model) hitTest(x, y int) (mouseHit, bool) {
 	case m.narrow:
 		// One pane fills the width, and the focused one is the one on screen.
 		hit.pane = m.focus
-	case x >= m.leftW:
-		hit.pane, paneW = focusRight, m.rightW
-		x -= m.leftW
+	default:
+		onRight := x >= m.leftW
+		if onRight {
+			paneW = m.rightW
+			x -= m.leftW
+		}
+		if onRight != m.view.listOnRight() {
+			hit.pane = focusDoc
+		}
 	}
 
 	top := headerH
@@ -1282,14 +1307,27 @@ func (m *Model) layout() {
 	// layout() but a window resize while one view is hidden does not reach it
 	// again, so a hidden pane sized once at zero would render as one column
 	// the moment it appeared.
-	m.files.SetSize(m.contentW(m.leftW), m.contentH())
-	m.diff.SetSize(m.contentW(m.rightW), m.contentH())
-	m.log.SetSize(m.contentW(m.leftW), m.contentH())
-	m.branches.SetSize(m.contentW(m.leftW), m.contentH())
-	m.detail.SetSize(m.contentW(m.rightW), m.contentH())
+	//
+	// Each is sized for the side its own view puts it on, through roleW, so no
+	// pane here knows which side that is.
+	m.files.SetSize(m.contentW(m.roleW(viewStatus, focusList)), m.contentH())
+	m.diff.SetSize(m.contentW(m.roleW(viewStatus, focusDoc)), m.contentH())
+	m.log.SetSize(m.contentW(m.roleW(viewLog, focusList)), m.contentH())
+	m.branches.SetSize(m.contentW(m.roleW(viewBranches, focusList)), m.contentH())
+	m.detail.SetSize(m.contentW(m.roleW(viewLog, focusDoc)), m.contentH())
 	// The editor replaces both panes rather than sitting beside them, so it is
 	// the one thing here sized against the full width.
 	m.commit.SetSize(m.contentW(m.width), m.contentH())
+}
+
+// roleW is the width of the pane in role r when view v is on screen: leftW or
+// rightW, by which side v draws its list on. In the narrow layout the two are
+// the same number, so the question answers itself.
+func (m Model) roleW(v view, r focus) int {
+	if (r == focusList) == v.listOnRight() {
+		return m.rightW
+	}
+	return m.leftW
 }
 
 // setSplit moves the boundary between the panes of the current view so the
@@ -1393,16 +1431,19 @@ func (m Model) body() string {
 		panes = m.framed(m.commit.Title(), m.commit.View(), m.width, true)
 	case m.narrow:
 		// One pane at a time; tab swaps which one is visible.
-		if m.focus == focusRight {
-			panes = m.framed(m.rightTitle(), m.rightView(), m.rightW, true)
+		if m.focus == focusDoc {
+			panes = m.framed(m.docTitle(), m.docView(), m.width, true)
 		} else {
-			panes = m.framed(m.leftTitle(), m.leftView(), m.leftW, true)
+			panes = m.framed(m.listTitle(), m.listView(), m.width, true)
 		}
 	default:
-		panes = lipgloss.JoinHorizontal(lipgloss.Top,
-			m.framed(m.leftTitle(), m.leftView(), m.leftW, m.focus == focusLeft),
-			m.framed(m.rightTitle(), m.rightView(), m.rightW, m.focus == focusRight),
-		)
+		list := m.framed(m.listTitle(), m.listView(), m.roleW(m.view, focusList), m.focus == focusList)
+		doc := m.framed(m.docTitle(), m.docView(), m.roleW(m.view, focusDoc), m.focus == focusDoc)
+		left, right := list, doc
+		if m.view.listOnRight() {
+			left, right = doc, list
+		}
+		panes = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
 	frame := lipgloss.JoinVertical(lipgloss.Left,
@@ -1413,9 +1454,9 @@ func (m Model) body() string {
 	return lipgloss.NewStyle().MaxHeight(m.height).MaxWidth(m.width).Render(frame)
 }
 
-// leftTitle and rightTitle name whichever pane the current view puts in each
-// slot, so body() does not have to know which view it is drawing.
-func (m Model) leftTitle() string {
+// listTitle and docTitle name whichever pane the current view puts in each
+// role, so body() does not have to know which view it is drawing.
+func (m Model) listTitle() string {
 	if m.view == viewBranches {
 		if n := m.branches.Len(); n > 0 {
 			return "Branches (" + strconv.Itoa(n) + ")"
@@ -1440,7 +1481,7 @@ func (m Model) leftTitle() string {
 	return "Files"
 }
 
-func (m Model) rightTitle() string {
+func (m Model) docTitle() string {
 	// The log and branch views share the commit pane, so they share its title.
 	if m.view != viewStatus {
 		if sha := m.detail.Title(); sha != "" {
@@ -1451,7 +1492,7 @@ func (m Model) rightTitle() string {
 	return diffTitle(m.diff.Title(), m.stagedSide())
 }
 
-func (m Model) leftView() string {
+func (m Model) listView() string {
 	switch m.view {
 	case viewLog:
 		return m.log.View()
@@ -1461,7 +1502,7 @@ func (m Model) leftView() string {
 	return m.files.View()
 }
 
-func (m Model) rightView() string {
+func (m Model) docView() string {
 	if m.view != viewStatus {
 		return m.detail.View()
 	}

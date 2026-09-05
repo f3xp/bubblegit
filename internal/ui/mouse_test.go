@@ -12,9 +12,11 @@ import (
 // bordered panes filling the rest. framed() draws a top border, a title, the
 // body, then a closing border, so body row 0 is terminal row 3.
 //
-// The two views split the width differently — the files pane takes 27 columns
-// and the log pane 40 — so the columns here are chosen to sit inside a body in
-// either one rather than being derived from one view's split.
+// The views split the width differently — the status view's left pane, the
+// diff, takes 52 columns and the log pane 40 — so the columns here are chosen to
+// sit inside a body in every view rather than being derived from one view's
+// split. They name sides, not panes: in the status view the file list is on the
+// right and the diff on the left, and in the other two the list is on the left.
 const (
 	bodyTop   = 3
 	leftBody  = 3
@@ -34,6 +36,11 @@ func (h *harness) wheel(x, y int, button tea.MouseButton) tea.Cmd {
 // TestHitTest pins the arithmetic that turns a terminal cell into a pane and a
 // row. Every other mouse test is written in coordinates, so all of them are
 // wrong together if this is wrong.
+//
+// The pane comes back as a role. In the status view the left pane is the diff
+// — the document — and the right one the file list; the log view is checked
+// last because it is the other way round, and that is the one step of hitTest
+// that differs per view.
 func TestHitTest(t *testing.T) {
 	h := newHarness(t)
 
@@ -44,23 +51,23 @@ func TestHitTest(t *testing.T) {
 		row  int
 		ok   bool
 	}{
-		{"the app header is not a pane", 3, 0, focusLeft, -1, false},
-		{"below the frame", 3, 24, focusLeft, -1, false},
-		{"right of the frame", 80, 3, focusLeft, -1, false},
-		{"negative", -1, 3, focusLeft, -1, false},
+		{"the app header is not a pane", 3, 0, focusList, -1, false},
+		{"below the frame", 3, 24, focusList, -1, false},
+		{"right of the frame", 80, 3, focusList, -1, false},
+		{"negative", -1, 3, focusList, -1, false},
 
-		{"first body row of the left pane", leftBody, bodyTop, focusLeft, 0, true},
-		{"last body row of the left pane", leftBody, 22, focusLeft, 19, true},
-		{"the left pane's top border", leftBody, 1, focusLeft, -1, true},
-		{"the left pane's title", leftBody, 2, focusLeft, -1, true},
-		{"the left pane's bottom border", leftBody, 23, focusLeft, -1, true},
-		{"the left pane's left border", 0, 10, focusLeft, -1, true},
-		{"the left pane's right border", 26, 10, focusLeft, -1, true},
+		{"first body row of the left pane", leftBody, bodyTop, focusDoc, 0, true},
+		{"last body row of the left pane", leftBody, 22, focusDoc, 19, true},
+		{"the left pane's top border", leftBody, 1, focusDoc, -1, true},
+		{"the left pane's title", leftBody, 2, focusDoc, -1, true},
+		{"the left pane's bottom border", leftBody, 23, focusDoc, -1, true},
+		{"the left pane's left border", 0, 10, focusDoc, -1, true},
+		{"the left pane's right border", 51, 10, focusDoc, -1, true},
 
-		{"the right pane's left border", 27, 10, focusRight, -1, true},
-		{"first body row of the right pane", 28, bodyTop, focusRight, 0, true},
-		{"the right pane's right border", 79, bodyTop, focusRight, -1, true},
-		{"the last body column of the right pane", 78, bodyTop, focusRight, 0, true},
+		{"the right pane's left border", 52, 10, focusList, -1, true},
+		{"first body row of the right pane", 53, bodyTop, focusList, 0, true},
+		{"the right pane's right border", 79, bodyTop, focusList, -1, true},
+		{"the last body column of the right pane", 78, bodyTop, focusList, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hit, ok := h.m.hitTest(tc.x, tc.y)
@@ -75,6 +82,14 @@ func TestHitTest(t *testing.T) {
 					tc.x, tc.y, hit.pane, hit.row, tc.pane, tc.row)
 			}
 		})
+	}
+
+	h.enterLog()
+	if hit, _ := h.m.hitTest(leftBody, bodyTop); hit.pane != focusList {
+		t.Errorf("in the log view the left pane is role %d, want the list", hit.pane)
+	}
+	if hit, _ := h.m.hitTest(rightBody, bodyTop); hit.pane != focusDoc {
+		t.Errorf("in the log view the right pane is role %d, want the commit", hit.pane)
 	}
 }
 
@@ -93,10 +108,10 @@ func TestHitTestWithoutBorders(t *testing.T) {
 		pane focus
 		row  int
 	}{
-		{0, 1, focusLeft, 0},
-		{leftBody, 3, focusLeft, 2},
-		{27, 1, focusRight, 0},
-		{79, 3, focusRight, 2},
+		{0, 1, focusDoc, 0},
+		{leftBody, 3, focusDoc, 2},
+		{52, 1, focusList, 0},
+		{79, 3, focusList, 2},
 	} {
 		hit, ok := h.m.hitTest(tc.x, tc.y)
 		if !ok {
@@ -120,13 +135,13 @@ func TestHitTestWhenNarrow(t *testing.T) {
 	}
 
 	hit, ok := h.m.hitTest(leftBody, bodyTop)
-	if !ok || hit.pane != focusLeft || hit.row != 0 {
-		t.Fatalf("with the left pane showing: pane %d row %d ok %v", hit.pane, hit.row, ok)
+	if !ok || hit.pane != focusList || hit.row != 0 {
+		t.Fatalf("with the list showing: pane %d row %d ok %v", hit.pane, hit.row, ok)
 	}
 
 	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
-	if hit, _ := h.m.hitTest(leftBody, bodyTop); hit.pane != focusRight {
-		t.Errorf("with the right pane showing, the same cell landed on pane %d", hit.pane)
+	if hit, _ := h.m.hitTest(leftBody, bodyTop); hit.pane != focusDoc {
+		t.Errorf("with the diff showing, the same cell landed on pane %d", hit.pane)
 	}
 }
 
@@ -135,7 +150,7 @@ func TestHitTestWhenNarrow(t *testing.T) {
 func TestClickSelectsFileRow(t *testing.T) {
 	h := newHarness(t)
 
-	cmd := h.click(leftBody, bodyTop+3)
+	cmd := h.click(rightBody, bodyTop+3)
 	if got := h.m.SelectedPath(); got != "plain.txt" {
 		t.Fatalf("clicking the fourth row selected %q, want plain.txt", got)
 	}
@@ -153,7 +168,7 @@ func TestClickSelectsFileRow(t *testing.T) {
 // list does not.
 func TestClickOnSelectedRowSpawnsNothing(t *testing.T) {
 	h := newHarness(t)
-	if cmd := h.click(leftBody, bodyTop); cmd != nil {
+	if cmd := h.click(rightBody, bodyTop); cmd != nil {
 		t.Error("clicking the already-selected row requested a diff")
 	}
 	if got := h.m.SelectedPath(); got != "logo.png" {
@@ -165,7 +180,7 @@ func TestClickOnSelectedRowSpawnsNothing(t *testing.T) {
 // row. Clicking it is not a request for the last file.
 func TestClickPastTheListKeepsSelection(t *testing.T) {
 	h := newHarness(t)
-	if cmd := h.click(leftBody, bodyTop+15); cmd != nil {
+	if cmd := h.click(rightBody, bodyTop+15); cmd != nil {
 		t.Error("clicking below the list requested a diff")
 	}
 	if got := h.m.SelectedPath(); got != "logo.png" {
@@ -173,13 +188,13 @@ func TestClickPastTheListKeepsSelection(t *testing.T) {
 	}
 }
 
-// TestClickMovesFocusAndDiffCursor covers the right-hand pane, where the row
-// under the pointer is what the staging keys act on.
+// TestClickMovesFocusAndDiffCursor covers the diff pane, where the row under
+// the pointer is what the staging keys act on.
 func TestClickMovesFocusAndDiffCursor(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
 
-	h.click(rightBody, bodyTop+2)
+	h.click(leftBody, bodyTop+2)
 	if !h.m.DiffFocused() {
 		t.Fatal("clicking the diff pane did not focus it")
 	}
@@ -203,7 +218,7 @@ func TestClickOnPaneChromeOnlyTakesFocus(t *testing.T) {
 	h.selectFile("two-hunks.txt")
 	_, _, before, _ := h.m.diff.Selection()
 
-	if cmd := h.click(rightBody, 1); cmd != nil {
+	if cmd := h.click(leftBody, 1); cmd != nil {
 		t.Error("clicking a pane border produced a command")
 	}
 	if !h.m.DiffFocused() {
@@ -221,7 +236,7 @@ func TestWheelScrollsUnderPointerWithoutFocus(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
 
-	h.wheel(rightBody, bodyTop, tea.MouseWheelDown)
+	h.wheel(leftBody, bodyTop, tea.MouseWheelDown)
 	if h.m.DiffFocused() {
 		t.Error("the wheel moved focus to the pane under the pointer")
 	}
@@ -237,20 +252,20 @@ func TestWheelScrollsUnderPointerWithoutFocus(t *testing.T) {
 	}
 
 	// And back, to prove the direction is not a coincidence.
-	h.wheel(rightBody, bodyTop, tea.MouseWheelUp)
+	h.wheel(leftBody, bodyTop, tea.MouseWheelUp)
 	if _, hunk, line, _ := h.m.diff.Selection(); hunk != 0 || line != -1 {
 		t.Errorf("scrolling back left the cursor on hunk %d line %d, want the first hunk header", hunk, line)
 	}
 }
 
-// TestWheelOverTheFileListMovesSelection covers the left-hand pane, where the
+// TestWheelOverTheFileListMovesSelection covers the file list, where the
 // wheel moves the cursor rather than a scroll offset — the cursor is what the
 // staging keys act on, so a view that could scroll away from it would stage a
 // file the user cannot see.
 func TestWheelOverTheFileListMovesSelection(t *testing.T) {
 	h := newHarness(t)
 
-	cmd := h.wheel(leftBody, bodyTop+1, tea.MouseWheelDown)
+	cmd := h.wheel(rightBody, bodyTop+1, tea.MouseWheelDown)
 	if got := h.m.SelectedPath(); got != "plain.txt" {
 		t.Fatalf("one notch down selected %q, want plain.txt", got)
 	}
@@ -352,8 +367,8 @@ func TestMouseIgnoredWhileEditing(t *testing.T) {
 	}
 
 	for _, msg := range []tea.Msg{
-		tea.MouseClickMsg{X: leftBody, Y: bodyTop + 3, Button: tea.MouseLeft},
-		tea.MouseWheelMsg{X: leftBody, Y: bodyTop, Button: tea.MouseWheelDown},
+		tea.MouseClickMsg{X: rightBody, Y: bodyTop + 3, Button: tea.MouseLeft},
+		tea.MouseWheelMsg{X: rightBody, Y: bodyTop, Button: tea.MouseWheelDown},
 	} {
 		if cmd := h.send(msg); cmd != nil {
 			t.Errorf("%T produced a command while the editor was open", msg)
@@ -372,8 +387,8 @@ func TestDragInsideAPaneIsInert(t *testing.T) {
 	h := newHarness(t)
 
 	for _, msg := range []tea.Msg{
-		tea.MouseMotionMsg{X: leftBody, Y: bodyTop + 3, Button: tea.MouseLeft},
-		tea.MouseReleaseMsg{X: leftBody, Y: bodyTop + 3, Button: tea.MouseLeft},
+		tea.MouseMotionMsg{X: rightBody, Y: bodyTop + 3, Button: tea.MouseLeft},
+		tea.MouseReleaseMsg{X: rightBody, Y: bodyTop + 3, Button: tea.MouseLeft},
 	} {
 		if cmd := h.send(msg); cmd != nil {
 			t.Errorf("%T produced a command", msg)
@@ -390,7 +405,7 @@ func TestMiddleAndRightClickAreInert(t *testing.T) {
 	h := newHarness(t)
 
 	for _, b := range []tea.MouseButton{tea.MouseMiddle, tea.MouseRight} {
-		if cmd := h.send(tea.MouseClickMsg{X: leftBody, Y: bodyTop + 3, Button: b}); cmd != nil {
+		if cmd := h.send(tea.MouseClickMsg{X: rightBody, Y: bodyTop + 3, Button: b}); cmd != nil {
 			t.Errorf("%v produced a command", b)
 		}
 	}

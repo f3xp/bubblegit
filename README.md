@@ -30,7 +30,7 @@ go run ./cmd/bubblegit    # from anywhere inside a git repository
 `1` working tree, `2` log, `3` branches. Each view is a pair of panes, and `tab` switches
 between them.
 
-**Working tree (`1`).** Files on the left, the diff of the selected file on the right. `t`
+**Working tree (`1`).** The diff of the selected file on the left, files on the right. `t`
 toggles the diff between the worktree and the staged side, and the diff pane title says which
 side you are looking at.
 

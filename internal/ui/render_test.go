@@ -137,9 +137,9 @@ func (h *harness) selectFile(path string) {
 	h.resolveDiff()
 }
 
-// focusRightOn moves the diff cursor onto the first row matching kind and text.
+// focusDiffOn moves the diff cursor onto the first row matching kind and text.
 // Tests name the line they mean; a row offset would move with the fixture.
-func (h *harness) focusRightOn(kind git.LineKind, text string) {
+func (h *harness) focusDiffOn(kind git.LineKind, text string) {
 	h.t.Helper()
 	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
 
@@ -468,7 +468,7 @@ func TestToggleStagedSwitchesSide(t *testing.T) {
 func TestStageLineFromDiffPane(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusRightOn(git.LineAdd, "18 edited")
+	h.focusDiffOn(git.LineAdd, "18 edited")
 
 	h.run(h.key(" "))
 
@@ -486,7 +486,7 @@ func TestStageLineFromDiffPane(t *testing.T) {
 func TestStageHunkKey(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusRightOn(git.LineContext, "16")
+	h.focusDiffOn(git.LineContext, "16")
 
 	h.run(h.key("a"))
 
@@ -504,7 +504,7 @@ func TestStageHunkKey(t *testing.T) {
 func TestStageOnContextLineDoesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusRightOn(git.LineContext, "16")
+	h.focusDiffOn(git.LineContext, "16")
 
 	if cmd := h.key(" "); cmd != nil {
 		t.Fatal("the stage key on a context line issued a git command")
@@ -549,7 +549,7 @@ func TestUnstageFollowsTheVisibleSide(t *testing.T) {
 func TestPartialNoEOLIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("noeol.txt")
-	h.focusRightOn(git.LineAdd, "no trailing newline, edited")
+	h.focusDiffOn(git.LineAdd, "no trailing newline, edited")
 
 	if cmd := h.key(" "); cmd != nil {
 		t.Fatal("a partial no-EOL selection was sent to git apply")
@@ -565,7 +565,7 @@ func TestPartialNoEOLIsRefused(t *testing.T) {
 func TestStageKeyIgnoredWhileApplying(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusRightOn(git.LineAdd, "18 edited")
+	h.focusDiffOn(git.LineAdd, "18 edited")
 
 	if cmd := h.key(" "); cmd == nil {
 		t.Fatal("the first stage key produced no command")
@@ -583,7 +583,7 @@ func TestStageKeyIgnoredWhileApplying(t *testing.T) {
 func TestDiffCursorStaysPutAcrossReload(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusRightOn(git.LineAdd, "18 edited")
+	h.focusDiffOn(git.LineAdd, "18 edited")
 
 	_, _, before, _ := h.m.diff.Selection()
 	h.m.diff.SetLoading("two-hunks.txt")
@@ -601,7 +601,7 @@ func TestDiffCursorStaysPutAcrossReload(t *testing.T) {
 func TestStageIsRefusedWhileTheDiffIsLoading(t *testing.T) {
 	h := newHarness(t)
 	h.selectFile("two-hunks.txt")
-	h.focusRightOn(git.LineAdd, "18 edited")
+	h.focusDiffOn(git.LineAdd, "18 edited")
 
 	// Move to another file without answering the diff request it issues.
 	h.send(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -664,7 +664,7 @@ func TestPartialStageOfUntrackedFile(t *testing.T) {
 	if sel, _ := h.m.files.Selected(); !sel.IsUntracked() {
 		t.Fatal("untracked.txt should start with no index entry")
 	}
-	h.focusRightOn(git.LineAdd, "u2")
+	h.focusDiffOn(git.LineAdd, "u2")
 
 	h.run(h.key(" "))
 
