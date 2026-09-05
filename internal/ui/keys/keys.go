@@ -37,9 +37,20 @@ type Map struct {
 	// there is no branch under a cursor for it to mean.
 	Branch []string
 
-	// Confirm and Cancel only mean anything while the message editor has
-	// focus. Confirm is not "enter": enter is a newline in a multi-line
-	// message, and a commit message body is the normal case, not the rare one.
+	// BranchLog scopes the log view to the branch under the cursor, the way
+	// tig's refs view opens the main view on a ref. It is what keeps a
+	// branch's history reachable without a third pane: the log view already
+	// walks from a set of tips, so pointing it at another branch reuses the
+	// pane rather than adding one.
+	BranchLog []string
+
+	// Confirm only means anything while the message editor has focus. It is
+	// not "enter": enter is a newline in a multi-line message, and a commit
+	// message body is the normal case, not the rare one.
+	//
+	// Cancel closes the editor, and backs a branch-scoped log out to the
+	// branch list it was opened from. Both are the same key because both are
+	// the same gesture — leaving something that was opened on purpose.
 	Confirm []string
 	Cancel  []string
 
@@ -83,6 +94,11 @@ func Default() Map {
 		Commit: []string{"c"},
 		Amend:  []string{"C"},
 		Branch: []string{"b"},
+
+		// "enter", which is free everywhere the branch list has focus: the
+		// editor owns it as a newline, but the editor only opens from the
+		// status view.
+		BranchLog: []string{"enter"},
 
 		Confirm: []string{"ctrl+s"},
 		Cancel:  []string{"esc"},
@@ -152,6 +168,8 @@ func (m Map) Bindings() [][]Binding {
 		},
 		{
 			{m.Branch, "checkout branch"},
+			{m.BranchLog, "log this branch"},
+			{m.Cancel, "back to branches (from a branch log)"},
 		},
 		{
 			{m.StatusView, "status view"},

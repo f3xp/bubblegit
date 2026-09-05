@@ -36,6 +36,24 @@ that no longer means the same thing.
 The keys work in one place the drag cannot: a terminal too short for pane chrome has no border
 column to grab, but its panes still split the width.
 
+A branch's commits are reached by parameterising a view rather than adding one. lazygit stacks
+its lists vertically down a column and shares one detail pane between them; tig gives its main
+view a revision argument and opens it on whatever ref you pressed enter on. The second fits the
+two-pane budget, and the log view was already most of the way there — `git.Log` walks from a set
+of tips, and a resumed walk names the SHAs it stopped at, so paging a scoped log needs nothing
+of its own. So `enter` in the branch view points the log at that branch instead of at HEAD.
+
+What that costs is a mode: the log view now shows one of two histories and looks the same
+either way. The pane title names the ref to settle it, and the log key clears the scope, because
+there is no view stack to pop back through — `q` quits, so without that a scoped log would be a
+one-way door.
+
+`esc` returns to the branch list, which is the smallest thing that behaves like the pop tig gets
+from its view stack. It is guarded on the scope rather than bound outright: a log reached with
+`2` was not opened from the branch view, and sending that one there would be a jump rather than
+a return. The scope survives the trip, since clearing it would leave `logLoaded` true and the
+next `2` would title one branch's commits as HEAD's.
+
 Every view draws its document — the diff, or the commit — on the left and its list on the
 right. The document is the pane that gets read, so it takes the side a reader starts on; a list
 row is a line of status, and is scanned rather than read. Focus follows the pane's role — list

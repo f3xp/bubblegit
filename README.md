@@ -34,14 +34,19 @@ between them.
 toggles the diff between the worktree and the staged side, and the diff pane title says which
 side you are looking at.
 
-**Log (`2`).** The selected commit on the left, commits with a graph column on the right. The
+**Log (`2`).** The selected commit on the left, commits with a graph column on the right. It
+walks from HEAD, or from a branch when opened with `enter` from the branch view, in which case
+the pane title names the branch. `esc` goes back to the branch list, and `2` returns the log to
+HEAD. The
 commit is its message and its patch, highlighted the same way a working-tree diff is. A merge
 shows what it brought in over its first parent. The initial commit shows its whole tree. Nothing
 in this view writes, so the staging and commit keys do nothing here.
 
 **Branches (`3`).** The tip commit of the selected branch on the left, local branches on the
 right. The view opens on the branch you are on. Only local branches are listed, since a
-remote-tracking ref is not a branch you can be on.
+remote-tracking ref is not a branch you can be on. `enter` opens the log view on the selected
+branch, which is how you read a branch's history without checking it out; `esc` there comes back
+to this list.
 
 Each row shows how far the branch has drifted from its upstream:
 
@@ -96,6 +101,8 @@ The editor owns every other key while it is open, so `q` types a q.
 | Key | Action |
 | --- | --- |
 | `b` | check out the branch under the cursor |
+| `enter` | open the log view on the branch under the cursor |
+| `esc` | in a branch log, back to the branch list |
 
 There is no confirmation step. A switch is reversible, and the one way it loses work is the
 case git refuses on its own. When git refuses, the pane shows what it said.

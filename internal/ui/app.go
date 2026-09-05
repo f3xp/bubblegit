@@ -191,6 +191,18 @@ type Model struct {
 	// read at startup: nothing shows it yet and it costs a process spawn.
 	logLoaded bool
 
+	// logRef is the ref the log view walks from, empty for HEAD. It is how a
+	// branch's history is reached without a third pane: the log view is
+	// parameterised by a revision, the way tig's main view is, rather than
+	// duplicated per branch. Paging is unaffected — a resumed walk names the
+	// SHAs it stopped at, which already say which history they belong to.
+	//
+	// Set by `enter` in the branch view and cleared by the log view's own key,
+	// which is the only way back to HEAD: there is no view stack to pop, since
+	// `q` quits. That is safe only because listTitle names the ref — a log
+	// that silently changed which history it showed would read as a bug.
+	logRef string
+
 	// branchesLoaded is logLoaded's counterpart, and is cleared for the same
 	// reasons: a commit moves the current branch's tip and its ahead count, so
 	// the list on screen describes a branch that has moved on.
@@ -309,10 +321,18 @@ func (m *Model) loadLog() tea.Cmd {
 	m.logGen++
 	m.logPaging = true
 	gen, repo := m.logGen, m.repo
+
+	// nil rather than an empty string when unscoped: git.Log reads no tips as
+	// HEAD, and an empty argument is a revision git cannot resolve.
+	var from []string
+	if m.logRef != "" {
+		from = []string{m.logRef}
+	}
+
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
-		commits, err := git.Log(ctx, repo, nil, git.LogPageSize)
+		commits, err := git.Log(ctx, repo, from, git.LogPageSize)
 		return logMsg{gen: gen, commits: commits, err: err}
 	}
 }
@@ -611,7 +631,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case keys.Matches(m.keys.StatusView, k):
 		return m.setView(viewStatus)
 
+	// The log key is also the way back to HEAD, since there is no view stack
+	// to pop out of a branch-scoped log. Cleared here rather than in setView,
+	// which the branch path goes through too — and unconditionally, so it
+	// works while the log view is already the one on screen and setView would
+	// return early.
 	case keys.Matches(m.keys.LogView, k):
+		if m.logRef != "" {
+			m.logRef, m.logLoaded = "", false
+			if m.view == viewLog {
+				return m, m.loadLog()
+			}
+		}
 		return m.setView(viewLog)
 
 	case keys.Matches(m.keys.BranchView, k):
@@ -737,6 +768,22 @@ func (m Model) setView(v view) (tea.Model, tea.Cmd) {
 // The staging bindings are simply absent here rather than guarded one by one:
 // nothing in this view is stageable, so there is no key for it to mean.
 func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
+	// Escape backs out of a branch-scoped log to the list it was opened from,
+	// which is the other half of `enter`. It is guarded on the scope rather
+	// than offered always: a log reached with `2` was not opened from
+	// anywhere, and sending that one to the branch view would be a jump, not a
+	// return.
+	//
+	// The scope is deliberately left set. Clearing it here would strand the
+	// stale commits: logLoaded stays true, so the next `2` would skip the
+	// re-read and title one branch's history as HEAD's.
+	//
+	// Before the focus routing, so it works from either pane — backing out is
+	// about the view, the way the view keys are, not about what has focus.
+	if keys.Matches(m.keys.Cancel, k) && m.logRef != "" {
+		return m.setView(viewBranches)
+	}
+
 	if m.focus == focusDoc {
 		return m.handleDetailKey(k)
 	}
@@ -821,6 +868,24 @@ func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
 	switch {
 	case keys.Matches(m.keys.Branch, k):
 		return m, m.doCheckout()
+
+	// The scope is set before setView, not after: setView takes a value
+	// receiver, so it copies the model and an assignment made afterwards
+	// would be dropped on the copy it returns.
+	case keys.Matches(m.keys.BranchLog, k):
+		sel, ok := m.branches.Selected()
+		if !ok {
+			return m, nil
+		}
+		// Scoping to the branch you are on is the same history HEAD walks, so
+		// it is left unscoped rather than titled with a name that adds
+		// nothing.
+		m.logRef = ""
+		if !sel.Current {
+			m.logRef = sel.Name
+		}
+		m.logLoaded = false
+		return m.setView(viewLog)
 	case keys.Matches(m.keys.Down, k):
 		m.branches.MoveBy(1)
 	case keys.Matches(m.keys.Up, k):
@@ -1480,6 +1545,13 @@ func (m Model) listTitle() string {
 		return "Branches"
 	}
 	if m.view == viewLog {
+		// The ref comes before the count so a narrow pane truncates the
+		// number rather than the name: which history this is matters more
+		// than how much of it has been read.
+		scope := "Log"
+		if m.logRef != "" {
+			scope += " — " + m.logRef
+		}
 		if n := m.log.Len(); n > 0 {
 			// A trailing + means the count is what has been read so far, not
 			// how many commits the repository has.
@@ -1487,9 +1559,9 @@ func (m Model) listTitle() string {
 			if !m.log.AtEnd() {
 				more = "+"
 			}
-			return "Log (" + strconv.Itoa(n) + more + ")"
+			return scope + " (" + strconv.Itoa(n) + more + ")"
 		}
-		return "Log"
+		return scope
 	}
 	if n := m.files.Len(); n > 0 {
 		return "Files (" + strconv.Itoa(n) + ")"

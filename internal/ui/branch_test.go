@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -344,5 +345,126 @@ func TestCheckoutWithTheStagedSideShowing(t *testing.T) {
 	}
 	if body := ansi.Strip(h.m.Body()); strings.Contains(body, "git error") {
 		t.Errorf("the diff reload failed after the switch:\n%s", body)
+	}
+}
+
+// TestBranchLogScopesTheLogView covers the tig-style parameterised log: enter
+// on a branch opens the log view on that branch's history rather than HEAD's.
+// It is the only way to read a branch you are not on without checking it out,
+// and it is what the layout gives instead of a third pane.
+func TestBranchLogScopesTheLogView(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("feature")
+	h.run(h.enter())
+
+	if !h.m.InLogView() {
+		t.Fatal("enter on a branch did not open the log view")
+	}
+	// `feature` is the side of the merge, so its history is the two commits it
+	// forked from plus its own — and not the merge that took it back onto
+	// main, which is the commit HEAD's log leads with.
+	if h.m.log.Len() != 3 {
+		t.Fatalf("the log holds %d commits, want the 3 on `feature`", h.m.log.Len())
+	}
+	rows := ansi.Strip(h.m.log.View())
+	if strings.Contains(rows, "merge feature into main") {
+		t.Errorf("the log scoped to `feature` still shows main's merge:\n%s", rows)
+	}
+	if !strings.Contains(rows, "add feature.txt") {
+		t.Errorf("the log scoped to `feature` is missing its own commit:\n%s", rows)
+	}
+	// The title is what licenses the scope existing at all: a log that changed
+	// which history it walked without saying so reads as a bug.
+	if title := h.m.listTitle(); title != "Log — feature (3)" {
+		t.Errorf("the log pane is titled %q, want it to name the branch", title)
+	}
+
+	// The log key is the way back. There is no view stack to pop, so if this
+	// regresses a scoped log becomes a one-way door.
+	h.run(h.key("2"))
+	if h.m.log.Len() != 4 {
+		t.Fatalf("back on HEAD the log holds %d commits, want the fixture's 4", h.m.log.Len())
+	}
+	if title := h.m.listTitle(); title != "Log (4)" {
+		t.Errorf("the log pane is titled %q, want the unscoped title", title)
+	}
+}
+
+// TestBranchLogOnCurrentBranchStaysUnscoped keeps the title honest the other
+// way: the branch you are on walks the same history HEAD does, so naming it
+// would add a scope that is not one.
+func TestBranchLogOnCurrentBranchStaysUnscoped(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("main")
+	h.run(h.enter())
+
+	if title := h.m.listTitle(); title != "Log (4)" {
+		t.Errorf("the log pane is titled %q, want the unscoped title", title)
+	}
+}
+
+// TestBranchLogRecoversFromAMissingRef keeps the scope from becoming a one-way
+// door. The branch list is a snapshot, so the ref it names can be gone by the
+// time enter asks git to walk it — and the log key is the only way back, since
+// `q` quits rather than popping a view.
+func TestBranchLogRecoversFromAMissingRef(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("feature")
+
+	if _, err := h.r.Run(context.Background(), "update-ref", "-d", "refs/heads/feature"); err != nil {
+		t.Fatal(err)
+	}
+	h.run(h.enter())
+
+	if !h.m.InLogView() {
+		t.Fatal("enter on a branch did not open the log view")
+	}
+	if !strings.Contains(ansi.Strip(h.m.detail.View()), "feature") {
+		t.Errorf("the failed walk did not say which ref it could not resolve:\n%s", ansi.Strip(h.m.detail.View()))
+	}
+
+	h.run(h.key("2"))
+	if h.m.log.Len() != 4 {
+		t.Fatalf("the log key did not recover: it holds %d commits, want the fixture's 4", h.m.log.Len())
+	}
+	if title := h.m.listTitle(); title != "Log (4)" {
+		t.Errorf("the log pane is titled %q, want the unscoped title", title)
+	}
+}
+
+// TestBranchLogEscapeReturnsToBranches covers the other half of enter. It also
+// pins the guard: escape in an unscoped log has nowhere to return to, so it
+// must not jump to a view the user never came from.
+func TestBranchLogEscapeReturnsToBranches(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("feature")
+	h.run(h.enter())
+
+	h.maybeRun(h.esc())
+	if h.m.view != viewBranches {
+		t.Fatal("escape did not back out of the branch log")
+	}
+	if h.m.branches.SelectedName() != "feature" {
+		t.Errorf("the branch cursor came back on %q, want the branch it drilled into", h.m.branches.SelectedName())
+	}
+
+	// The scope outlives the trip, so the log key still has something to
+	// clear: without it logLoaded would keep the scoped commits on screen
+	// under an unscoped title. Via the status view, which is the longest way
+	// round — two view changes before the log key sees the scope at all.
+	h.maybeRun(h.key("1"))
+	h.run(h.key("2"))
+	if title := h.m.listTitle(); title != "Log (4)" {
+		t.Errorf("the log pane is titled %q, want the unscoped title", title)
+	}
+
+	// Unscoped now, so escape is inert rather than a jump.
+	h.maybeRun(h.esc())
+	if h.m.view != viewLog {
+		t.Error("escape left an unscoped log view, which it was not opened from")
 	}
 }

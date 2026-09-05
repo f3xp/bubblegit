@@ -118,6 +118,13 @@ func (h *harness) esc() tea.Cmd {
 	return h.send(tea.KeyPressMsg{Code: tea.KeyEsc})
 }
 
+// enter is a key of its own rather than one h.key() can spell: key() sends the
+// first byte of its argument, so "enter" would arrive as an e.
+func (h *harness) enter() tea.Cmd {
+	h.t.Helper()
+	return h.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
 // confirm is the commit key, which is deliberately not enter.
 func (h *harness) confirm() tea.Cmd {
 	h.t.Helper()
