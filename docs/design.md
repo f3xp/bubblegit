@@ -36,11 +36,10 @@ that no longer means the same thing.
 The keys work in one place the drag cannot: a terminal too short for pane chrome has no border
 column to grab, but its panes still split the width.
 
-The working tree view puts the diff on the left and the file list on the right; the log and
-branch views put their list on the left. The diff is the pane that gets read, so it takes the
-side and the room a reader expects, and a file row is a status code and a path. Focus follows
-the pane's role — list or document — not its side, so `tab`, the wheel and a click mean the same
-thing in every view whichever way round the panes are drawn.
+Every view draws its document — the diff, or the commit — on the left and its list on the
+right. The document is the pane that gets read, so it takes the side a reader starts on; a list
+row is a line of status, and is scanned rather than read. Focus follows the pane's role — list
+or document — not its side, so `tab`, the wheel and a click mean the same thing in every view.
 
 ## Mouse
 

@@ -142,7 +142,7 @@ func TestSplitterIsPerView(t *testing.T) {
 
 	h.enterLog()
 	if h.m.leftW != 40 {
-		t.Errorf("the log pane is %d columns wide, want its own default of 40", h.m.leftW)
+		t.Errorf("the log view's left pane is %d columns wide, want its own default of 40", h.m.leftW)
 	}
 	h.press("l", "l")
 	if h.m.leftW != 42 {

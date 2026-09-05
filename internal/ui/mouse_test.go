@@ -13,10 +13,10 @@ import (
 // body, then a closing border, so body row 0 is terminal row 3.
 //
 // The views split the width differently — the status view's left pane, the
-// diff, takes 52 columns and the log pane 40 — so the columns here are chosen to
-// sit inside a body in every view rather than being derived from one view's
-// split. They name sides, not panes: in the status view the file list is on the
-// right and the diff on the left, and in the other two the list is on the left.
+// diff, takes 52 columns and the log view's commit 40 — so the columns here are
+// chosen to sit inside a body in every view rather than being derived from one
+// view's split. Every view draws its document on the left and its list on the
+// right, so leftBody is always in the document and rightBody always in the list.
 const (
 	bodyTop   = 3
 	leftBody  = 3
@@ -37,10 +37,9 @@ func (h *harness) wheel(x, y int, button tea.MouseButton) tea.Cmd {
 // row. Every other mouse test is written in coordinates, so all of them are
 // wrong together if this is wrong.
 //
-// The pane comes back as a role. In the status view the left pane is the diff
-// — the document — and the right one the file list; the log view is checked
-// last because it is the other way round, and that is the one step of hitTest
-// that differs per view.
+// The pane comes back as a role: the left pane is the document and the right
+// one the list. The log view is checked last, at its own split, to pin that the
+// rule holds in every view rather than only at the status view's boundary.
 func TestHitTest(t *testing.T) {
 	h := newHarness(t)
 
@@ -85,11 +84,11 @@ func TestHitTest(t *testing.T) {
 	}
 
 	h.enterLog()
-	if hit, _ := h.m.hitTest(leftBody, bodyTop); hit.pane != focusList {
-		t.Errorf("in the log view the left pane is role %d, want the list", hit.pane)
+	if hit, _ := h.m.hitTest(leftBody, bodyTop); hit.pane != focusDoc {
+		t.Errorf("in the log view the left pane is role %d, want the commit", hit.pane)
 	}
-	if hit, _ := h.m.hitTest(rightBody, bodyTop); hit.pane != focusDoc {
-		t.Errorf("in the log view the right pane is role %d, want the commit", hit.pane)
+	if hit, _ := h.m.hitTest(rightBody, bodyTop); hit.pane != focusList {
+		t.Errorf("in the log view the right pane is role %d, want the list", hit.pane)
 	}
 }
 
@@ -274,14 +273,14 @@ func TestWheelOverTheFileListMovesSelection(t *testing.T) {
 	}
 }
 
-// TestClickSelectsCommitRow covers the log view: a different left-hand pane in
-// the same slot, a different width, and a detail read rather than a diff one.
+// TestClickSelectsCommitRow covers the log view: a different list in the same
+// role, a different width, and a detail read rather than a diff one.
 func TestClickSelectsCommitRow(t *testing.T) {
 	h := newHarness(t)
 	h.enterLog()
 
 	first := h.m.log.SelectedSHA()
-	cmd := h.click(leftBody, bodyTop+2)
+	cmd := h.click(rightBody, bodyTop+2)
 	if h.m.log.SelectedSHA() == first {
 		t.Fatal("clicking the third row did not move the log cursor")
 	}
@@ -296,7 +295,7 @@ func TestClickSelectsCommitRow(t *testing.T) {
 	}
 }
 
-// TestClickSelectsBranchRow covers the third left-hand pane, and the one whose
+// TestClickSelectsBranchRow covers the third list, and the one whose
 // cursor does not start at row 0: the view opens on the branch you are on, so
 // a click above that row only lands right if the row is read as a position on
 // screen rather than as a distance from the cursor.
@@ -308,7 +307,7 @@ func TestClickSelectsBranchRow(t *testing.T) {
 		t.Fatalf("the branch view opened on %q, want the current branch main", got)
 	}
 
-	cmd := h.click(leftBody, bodyTop+1)
+	cmd := h.click(rightBody, bodyTop+1)
 	if got := h.m.branches.SelectedName(); got != "feature" {
 		t.Fatalf("clicking the second row selected %q, want feature", got)
 	}
@@ -342,12 +341,12 @@ func TestWheelOverTheCommitPaneScrolls(t *testing.T) {
 	h.enterLog()
 	h.selectCommit("base: files with spaces, unicode, and no trailing newline")
 
-	h.wheel(rightBody, bodyTop, tea.MouseWheelDown)
+	h.wheel(leftBody, bodyTop, tea.MouseWheelDown)
 	if got := h.m.detail.Offset(); got != wheelStep {
 		t.Errorf("one notch left the commit pane at row %d, want %d", got, wheelStep)
 	}
 
-	h.click(rightBody, bodyTop+4)
+	h.click(leftBody, bodyTop+4)
 	if got := h.m.detail.Offset(); got != wheelStep {
 		t.Errorf("a click scrolled the commit pane to row %d, want it left at %d", got, wheelStep)
 	}

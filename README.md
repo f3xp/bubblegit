@@ -34,12 +34,12 @@ between them.
 toggles the diff between the worktree and the staged side, and the diff pane title says which
 side you are looking at.
 
-**Log (`2`).** Commits with a graph column on the left, the selected commit on the right: its
-message and its patch, highlighted the same way a working-tree diff is. A merge shows what it
-brought in over its first parent. The initial commit shows its whole tree. Nothing in this view
-writes, so the staging and commit keys do nothing here.
+**Log (`2`).** The selected commit on the left, commits with a graph column on the right. The
+commit is its message and its patch, highlighted the same way a working-tree diff is. A merge
+shows what it brought in over its first parent. The initial commit shows its whole tree. Nothing
+in this view writes, so the staging and commit keys do nothing here.
 
-**Branches (`3`).** Local branches on the left, the tip commit of the selected branch on the
+**Branches (`3`).** The tip commit of the selected branch on the left, local branches on the
 right. The view opens on the branch you are on. Only local branches are listed, since a
 remote-tracking ref is not a branch you can be on.
 

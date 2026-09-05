@@ -30,12 +30,11 @@ import (
 const gitTimeout = 30 * time.Second
 
 // splitDefaults is the fraction of the terminal the left pane starts with in
-// each view. It is a fraction of the left pane, not of the list: the status
-// view is the one that draws its list on the right, so its left pane is the
-// diff, and the diff takes the most. The file list wants the least of the three
-// lists anyway — a row there carries a status code and a path, where a log row
-// carries a graph, a SHA, a date and a subject, and a branch row a name, a
-// tracking count, a date and a subject.
+// each view. The left pane is the document in every view, so this is the
+// document's share. The status view gives its diff the most: a file row is a
+// status code and a path and is content with a third. A log row carries a
+// graph, a SHA, a date and a subject, and a branch row a name, a tracking
+// count, a date and a subject, so those two lists need half.
 //
 // It is where each view starts, not where it stays: the splitter moves them.
 var splitDefaults = [...]float64{
@@ -47,11 +46,11 @@ var splitDefaults = [...]float64{
 var errEmptyMessage = errors.New("empty commit message")
 
 // focus names the role of the pane taking keys — a view's list, or the
-// document beside it — not a particular pane and not a side of the screen. Each
-// view puts a different pair of panes into the two roles, and decides for
-// itself which side each one is drawn on (see view.listOnRight). Everything
-// that routes a key or a click reasons in roles, so the same key means the same
-// thing in every view whichever way round the panes are.
+// document beside it — not a particular pane. Each view puts a different pair
+// of panes into the two roles, and every view draws them the same way round:
+// the document on the left, where it gets read, and the list on the right.
+// Everything that routes a key or a click reasons in roles, so the same key
+// means the same thing in every view.
 type focus int
 
 const (
@@ -71,16 +70,6 @@ const (
 	viewLog
 	viewBranches
 )
-
-// listOnRight reports which side a view draws its list on. It is the one place
-// a role becomes a side: layout(), body() and hitTest() consult it, and nothing
-// else knows.
-//
-// The status view is the odd one out. Its document is a diff, which is the
-// wider and the more-read pane of its pair, so it gets the left and the room;
-// a file row is a status code and a path and is content with what is left. The
-// log and branch views read left to right, list then commit.
-func (v view) listOnRight() bool { return v == viewStatus }
 
 type headMsg struct {
 	head git.Head
@@ -1210,11 +1199,10 @@ type mouseHit struct {
 // This is layout() read backwards, and the two have to agree: framed() draws a
 // pane as a border row, a title row, contentH() body rows and a closing border
 // row, and the left pane owns columns 0..leftW-1 with the right one taking the
-// rest. Which role owns which side is the view's call — listOnRight — and is
-// the one step here that differs per view. Every branch layout() has, this one
-// has too — no border on a terminal too short for one, a single full-width pane
-// when there is no room for two — which is why it is pinned by a table test
-// rather than trusted.
+// rest. The left pane is the document and the right one the list, in every
+// view. Every branch layout() has, this one has too — no border on a terminal
+// too short for one, a single full-width pane when there is no room for two —
+// which is why it is pinned by a table test rather than trusted.
 func (m Model) hitTest(x, y int) (mouseHit, bool) {
 	if !m.ready || x < 0 || x >= m.width || y < headerH || y >= m.height {
 		return mouseHit{}, false
@@ -1238,15 +1226,11 @@ func (m Model) hitTest(x, y int) (mouseHit, bool) {
 	case m.narrow:
 		// One pane fills the width, and the focused one is the one on screen.
 		hit.pane = m.focus
+	case x >= m.leftW:
+		paneW = m.rightW
+		x -= m.leftW
 	default:
-		onRight := x >= m.leftW
-		if onRight {
-			paneW = m.rightW
-			x -= m.leftW
-		}
-		if onRight != m.view.listOnRight() {
-			hit.pane = focusDoc
-		}
+		hit.pane = focusDoc
 	}
 
 	top := headerH
@@ -1306,28 +1290,15 @@ func (m *Model) layout() {
 	// Every pane is sized, not only the pair on screen: a view switch calls
 	// layout() but a window resize while one view is hidden does not reach it
 	// again, so a hidden pane sized once at zero would render as one column
-	// the moment it appeared.
-	//
-	// Each is sized for the side its own view puts it on, through roleW, so no
-	// pane here knows which side that is.
-	m.files.SetSize(m.contentW(m.roleW(viewStatus, focusList)), m.contentH())
-	m.diff.SetSize(m.contentW(m.roleW(viewStatus, focusDoc)), m.contentH())
-	m.log.SetSize(m.contentW(m.roleW(viewLog, focusList)), m.contentH())
-	m.branches.SetSize(m.contentW(m.roleW(viewBranches, focusList)), m.contentH())
-	m.detail.SetSize(m.contentW(m.roleW(viewLog, focusDoc)), m.contentH())
+	// the moment it appeared. Lists go on the right, documents on the left.
+	m.files.SetSize(m.contentW(m.rightW), m.contentH())
+	m.log.SetSize(m.contentW(m.rightW), m.contentH())
+	m.branches.SetSize(m.contentW(m.rightW), m.contentH())
+	m.diff.SetSize(m.contentW(m.leftW), m.contentH())
+	m.detail.SetSize(m.contentW(m.leftW), m.contentH())
 	// The editor replaces both panes rather than sitting beside them, so it is
 	// the one thing here sized against the full width.
 	m.commit.SetSize(m.contentW(m.width), m.contentH())
-}
-
-// roleW is the width of the pane in role r when view v is on screen: leftW or
-// rightW, by which side v draws its list on. In the narrow layout the two are
-// the same number, so the question answers itself.
-func (m Model) roleW(v view, r focus) int {
-	if (r == focusList) == v.listOnRight() {
-		return m.rightW
-	}
-	return m.leftW
 }
 
 // setSplit moves the boundary between the panes of the current view so the
@@ -1437,13 +1408,10 @@ func (m Model) body() string {
 			panes = m.framed(m.listTitle(), m.listView(), m.width, true)
 		}
 	default:
-		list := m.framed(m.listTitle(), m.listView(), m.roleW(m.view, focusList), m.focus == focusList)
-		doc := m.framed(m.docTitle(), m.docView(), m.roleW(m.view, focusDoc), m.focus == focusDoc)
-		left, right := list, doc
-		if m.view.listOnRight() {
-			left, right = doc, list
-		}
-		panes = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+		panes = lipgloss.JoinHorizontal(lipgloss.Top,
+			m.framed(m.docTitle(), m.docView(), m.leftW, m.focus == focusDoc),
+			m.framed(m.listTitle(), m.listView(), m.rightW, m.focus == focusList),
+		)
 	}
 
 	frame := lipgloss.JoinVertical(lipgloss.Left,
