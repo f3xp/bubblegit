@@ -127,6 +127,14 @@ silent. The third says so, because git applies a partial patch there happily and
 **The layout drops to one pane.** Below 48 columns there is only room for one. `tab` swaps
 which one is visible, and the splitter does nothing.
 
+## Alternatives
+
+bubblegit is early. If it does not do what you need yet, these do:
+
+- [lazygit](https://github.com/jesseduffield/lazygit)
+- [GitUI](https://github.com/Extrawurst/gitui)
+- [tig](https://github.com/jonas/tig)
+
 ## Development
 
 ```sh
