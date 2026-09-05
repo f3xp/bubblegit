@@ -19,27 +19,10 @@ bubblegit runs the real `git` binary, so your hooks, `commit.gpgsign`, credentia
 - A terminal with truecolor. Mouse support and the Kitty keyboard protocol are used when
   available, and things degrade cleanly when they are not.
 
-## Installing
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/f3xp/bubblegit/main/install.sh | sh
-```
-
-This puts the latest release binary for macOS or Linux in `/usr/local/bin`, or `~/.local/bin`
-when that is not writable. `BIN_DIR` picks another directory and `BUBBLEGIT_VERSION=v0.1.0`
-pins a release. On Windows, take the zip from the
-[releases page](https://github.com/f3xp/bubblegit/releases). With a Go toolchain, any platform
-can also do:
-
-```sh
-go install github.com/f3xp/bubblegit/cmd/bubblegit@latest
-```
-
 ## Running
 
 ```sh
-bubblegit                 # from anywhere inside a git repository
-go run ./cmd/bubblegit    # from a checkout
+go run ./cmd/bubblegit    # from anywhere inside a git repository
 ```
 
 ## Views
