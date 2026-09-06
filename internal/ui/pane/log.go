@@ -16,14 +16,6 @@ import (
 // the detail pane instead.
 const maxLanes = 6
 
-// dateFormat is absolute rather than relative ("3 days ago").
-//
-// A relative date is the nicer thing to read and it is not free: it depends on
-// time.Now(), so every golden file in this repo would change with the calendar
-// and the pane would need a clock injected to be testable. That machinery buys
-// nothing else, so the date stays absolute until something else needs a clock.
-const dateFormat = "2006-01-02"
-
 // Log lists commits with a lane graph down the left.
 type Log struct {
 	commits []git.Commit
@@ -212,8 +204,7 @@ func (l *Log) row(i int) string {
 
 	line := l.graphCell(i) + " " +
 		theme.Meta.Render(c.Short) + " " +
-		theme.Author(c.Author).Render(initials(c.Author)) + " " +
-		theme.Dim.Render(c.When.Format(dateFormat)) + " "
+		theme.Author(c.Author).Render(initials(c.Author)) + " "
 	// Refs go before the subject, where git, tig and lazygit put them.
 	if c.Refs != "" {
 		line += theme.Ref.Render("("+c.Refs+")") + " "

@@ -11,6 +11,14 @@ import (
 	"github.com/f3xp/bubblegit/internal/ui/theme"
 )
 
+// dateFormat is absolute rather than relative ("3 days ago").
+//
+// A relative date is the nicer thing to read and it is not free: it depends on
+// time.Now(), so every golden file in this repo would change with the calendar
+// and the pane would need a clock injected to be testable. That machinery buys
+// nothing else, so the date stays absolute until something else needs a clock.
+const dateFormat = "2006-01-02"
+
 // Branches lists the local branches.
 //
 // ponytail: this is the third pane carrying its own copy of the same

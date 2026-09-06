@@ -232,7 +232,7 @@ func TestStaleDetailIsDiscarded(t *testing.T) {
 	}
 }
 
-// TestLogViewRenders pins the whole frame: graph column, SHA, date, subject,
+// TestLogViewRenders pins the whole frame: graph column, SHA, author tag, subject,
 // and the detail pane beside it.
 func TestLogViewRenders(t *testing.T) {
 	h := newHarness(t)
