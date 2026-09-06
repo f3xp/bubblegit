@@ -18,6 +18,7 @@ import (
 	"github.com/f3xp/bubblegit/internal/ui/keys"
 	"github.com/f3xp/bubblegit/internal/ui/pane"
 	"github.com/f3xp/bubblegit/internal/ui/theme"
+	"github.com/f3xp/bubblegit/internal/watch"
 )
 
 // gitTimeout bounds any single git invocation so a wedged process (a hung
@@ -28,6 +29,11 @@ import (
 // the commit git actually completed then reports as a deadline error. Give
 // commit its own budget when that shows up, not before.
 const gitTimeout = 30 * time.Second
+
+// refreshInterval is how often the visible view is re-read unprompted, so a
+// commit made in another terminal shows up without a keypress. lazygit's
+// default; a file the watcher already covers shows up sooner.
+const refreshInterval = 10 * time.Second
 
 // splitDefaults is the fraction of the terminal the left pane starts with in
 // each view. The left pane is the document in every view, so this is the
@@ -70,6 +76,14 @@ const (
 	viewLog
 	viewBranches
 )
+
+// tickMsg is the periodic refresh firing. Its handler is the one place the
+// timer is re-armed, so there is never more than one outstanding.
+type tickMsg struct{}
+
+// watchMsg reports that a watched worktree file changed. Like tickMsg it
+// carries nothing: the answer to "something changed" is a status re-read.
+type watchMsg struct{}
 
 type headMsg struct {
 	head git.Head
@@ -149,6 +163,11 @@ type Model struct {
 	root string
 	repo *git.Runner
 	keys keys.Map
+
+	// watch covers the files the status list names, so an editor save is seen
+	// at once rather than at the next tick. nil when the watcher could not be
+	// started, in which case the tick alone carries the refresh.
+	watch *watch.Watcher
 
 	head git.Head
 	err  error
@@ -255,10 +274,14 @@ type Model struct {
 }
 
 func New(root string) Model {
+	// A failed watcher is not fatal: the periodic refresh still runs, only
+	// slower to notice a save.
+	w, _ := watch.New()
 	return Model{
 		root:   root,
 		repo:   git.New(root),
 		keys:   keys.Default(),
+		watch:  w,
 		diff:   pane.NewDiff(),
 		commit: pane.NewCommit(),
 		detail: pane.NewDetail(),
@@ -267,7 +290,62 @@ func New(root string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadHead(), m.loadStatus())
+	return tea.Batch(m.loadHead(), m.loadStatus(), tick(), m.waitWatch())
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+// waitWatch blocks a command goroutine on the watcher's next signal. It is
+// re-issued from the watchMsg handler, the way tick is from tickMsg.
+func (m Model) waitWatch() tea.Cmd {
+	if m.watch == nil {
+		return nil
+	}
+	ch := m.watch.Events()
+	return func() tea.Msg {
+		<-ch
+		return watchMsg{}
+	}
+}
+
+// refresh re-reads HEAD and the list on screen. The other lists are marked
+// stale rather than re-read, as after a commit: a process spent on a pane
+// nobody is looking at is waste. lazygit re-reads every panel, but every one of
+// its panels is on screen at once.
+func (m *Model) refresh() tea.Cmd {
+	if m.applying {
+		// The write's own arrival handler re-reads when it lands.
+		return nil
+	}
+	// The visible view's arrival handler sets its own flag back.
+	m.logLoaded, m.branchesLoaded = false, false
+	cmds := []tea.Cmd{m.loadHead()}
+	switch m.view {
+	case viewStatus:
+		cmds = append(cmds, m.loadStatus())
+	case viewLog:
+		cmds = append(cmds, m.loadLog())
+	case viewBranches:
+		cmds = append(cmds, m.loadBranches())
+	}
+	return tea.Batch(cmds...)
+}
+
+// watchPaths is what the watcher should cover after a status read: every path
+// git named, absolute. Worktree files only, never anything under .git —
+// `status` writes the index back (see git.Runner), so watching it would make
+// every refresh trigger the next.
+func (m Model) watchPaths(files []git.FileStatus) []string {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		if f.Kind == git.KindIgnored {
+			continue
+		}
+		paths = append(paths, filepath.Join(m.root, f.Path))
+	}
+	return paths
 }
 
 func (m Model) loadHead() tea.Cmd {
@@ -438,13 +516,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		m.ready = true
 
+	case tickMsg:
+		return m, tea.Batch(m.refresh(), tick())
+
+	case watchMsg:
+		// Re-armed even when refresh declined: a write is in flight, and its
+		// own reload will read the change.
+		return m, tea.Batch(m.refresh(), m.waitWatch())
+
 	case headMsg:
 		m.head, m.err = msg.head, msg.err
 
+	// ponytail: no generation counter, unlike diffMsg. A refresh can land
+	// beside a stage's own reload, two reads of the same repo milliseconds
+	// apart, and the later one wins — which is almost always also the newer.
+	// Copy logGen into a statusGen the day an out-of-order pair shows up.
 	case statusMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
+		}
+		if m.watch != nil {
+			m.watch.Set(m.watchPaths(msg.files))
 		}
 		m.files.SetFiles(msg.files)
 		return m, m.loadDiff()
@@ -647,6 +740,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case keys.Matches(m.keys.BranchView, k):
 		return m.setView(viewBranches)
+
+	// Works in every view: it re-reads whichever list is on screen.
+	case keys.Matches(m.keys.Refresh, k):
+		return m, m.refresh()
 
 	// Everything from here to the pane switch acts on the index or on HEAD,
 	// which only means something while the status view is the one on screen.

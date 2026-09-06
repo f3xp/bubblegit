@@ -67,6 +67,9 @@ type Map struct {
 	LogView    []string
 	BranchView []string
 
+	// Refresh re-reads the view on screen now rather than at the next tick.
+	Refresh []string
+
 	Help []string
 	Quit []string
 }
@@ -109,8 +112,9 @@ func Default() Map {
 		LogView:    []string{"2"},
 		BranchView: []string{"3"},
 
-		Help: []string{"?"},
-		Quit: []string{"q", "ctrl+c"},
+		Refresh: []string{"R"},
+		Help:    []string{"?"},
+		Quit:    []string{"q", "ctrl+c"},
 	}
 }
 
@@ -177,6 +181,7 @@ func (m Map) Bindings() [][]Binding {
 			{m.BranchView, "branch view"},
 		},
 		{
+			{m.Refresh, "refresh"},
 			{m.Help, "this help"},
 			{m.Quit, "quit"},
 		},
