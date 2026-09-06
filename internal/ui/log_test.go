@@ -60,7 +60,7 @@ func TestLogViewShowsCommitsAndGraph(t *testing.T) {
 	}
 
 	body := ansi.Strip(h.m.Body())
-	for _, want := range []string{"Log (4)", "merge feature into main", "◆"} {
+	for _, want := range []string{"Log (4)", "merge feature into main", "◆", "FI"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the log view is missing %q:\n%s", want, body)
 		}

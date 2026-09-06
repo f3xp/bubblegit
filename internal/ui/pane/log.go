@@ -212,6 +212,7 @@ func (l *Log) row(i int) string {
 
 	line := l.graphCell(i) + " " +
 		theme.Meta.Render(c.Short) + " " +
+		theme.Author(c.Author).Render(initials(c.Author)) + " " +
 		theme.Dim.Render(c.When.Format(dateFormat)) + " "
 	// Refs go before the subject, where git, tig and lazygit put them.
 	if c.Refs != "" {
@@ -228,6 +229,29 @@ func (l *Log) row(i int) string {
 		return theme.SelectRow(line, l.width)
 	}
 	return lipgloss.NewStyle().Width(l.width).Render(line)
+}
+
+// initials reduces an author name to a two-column tag: first and last name
+// for "Goutham Das" (GD), the first two letters for a lone "goutham" (GO).
+// Always two cells wide so the date column stays aligned, and built from runes
+// so a non-ASCII name does not break it.
+func initials(name string) string {
+	words := strings.Fields(name)
+	var tag []rune
+	switch len(words) {
+	case 0:
+	case 1:
+		tag = []rune(words[0])
+	default:
+		tag = append([]rune(words[0])[:1], []rune(words[len(words)-1])[0])
+	}
+	if len(tag) > 2 {
+		tag = tag[:2]
+	}
+	for len(tag) < 2 {
+		tag = append(tag, ' ')
+	}
+	return strings.ToUpper(string(tag))
 }
 
 // graphCell draws one row of the lane graph.
@@ -254,13 +278,15 @@ func (l *Log) graphCell(i int) string {
 		cells = clipped
 	}
 
+	// The node takes its author's colour, the same one as the tag beside the
+	// hash, so the graph itself shows who was committing where.
+	node := theme.Author(l.commits[i].Author)
+
 	var b strings.Builder
 	for _, r := range cells {
 		switch r {
-		case nodeMerge:
-			b.WriteString(theme.Meta.Render(string(r)))
-		case nodeCommit:
-			b.WriteString(theme.Cursor.Render(string(r)))
+		case nodeMerge, nodeCommit:
+			b.WriteString(node.Render(string(r)))
 		case ' ':
 			b.WriteByte(' ')
 		default:

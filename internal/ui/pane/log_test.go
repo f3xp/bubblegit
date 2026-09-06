@@ -153,3 +153,18 @@ func TestCursorSurvivesReload(t *testing.T) {
 		t.Errorf("cursor moved to %q after a reload, want A", l.SelectedSHA())
 	}
 }
+
+func TestInitials(t *testing.T) {
+	for name, want := range map[string]string{
+		"Goutham Das":        "GD",
+		"goutham":            "GO",
+		"Ada Byron Lovelace": "AL",
+		"":                   "  ",
+		"é":                  "É ",
+		"  spaced  out  ":    "SO",
+	} {
+		if got := initials(name); got != want {
+			t.Errorf("initials(%q) = %q, want %q", name, got, want)
+		}
+	}
+}

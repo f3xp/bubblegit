@@ -2,6 +2,7 @@
 package theme
 
 import (
+	"hash/fnv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -25,12 +26,32 @@ var (
 	// yellow git itself uses for decorations.
 	Ref = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
 
-	// Cursor colours the commit node in the log's graph column. It is not the
-	// selection: that is a whole row, drawn by SelectRow.
+	// Cursor colours the key names in the help overlay.
 	Cursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f5c2e7"))
 	Title    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#cdd6f4"))
 	TitleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))
+
+	// Authors are the colours an author's tag and graph node in the log can
+	// take. None of them is the pink of the hash or the grey of the date and
+	// lane lines, so a node never blends into its neighbours.
+	Authors = []lipgloss.Style{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#fab387")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#cba6f7")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#94e2d5")),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")),
+	}
 )
+
+// Author returns the style for an author's tag. Hashing the name keeps one
+// person the same colour across reloads and repositories; two authors can
+// still share a colour, which is why the tag carries their initials too.
+func Author(name string) lipgloss.Style {
+	h := fnv.New32a()
+	h.Write([]byte(name))
+	return Authors[int(h.Sum32()%uint32(len(Authors)))]
+}
 
 // keepBG is a reset that leaves the background alone: default foreground, and
 // off for every attribute the two things that colour a row can turn on —
