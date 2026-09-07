@@ -7,9 +7,10 @@
 A git TUI built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea). The goals are
 to stay fast on large repositories and to be more interactive than the alternatives.
 
-> **Status: vaporware until the alpha ships.** Nothing here is ready to rely on. What is
-> documented below works, but it will change without notice. Anything not documented is not
-> built yet.
+> **Status: early beta.** The first tagged build is
+> [v0.1.0](https://github.com/f3xp/bubblegit/releases/tag/v0.1.0), with binaries for macOS,
+> Linux and Windows. What is documented below works. Keys, layout and behaviour will still change
+> between releases, and anything not documented is not built yet.
 
 bubblegit runs the real `git` binary, so your hooks, `commit.gpgsign`, credential helpers,
 `core.pager` and the rest of your git config all work as they normally do.
