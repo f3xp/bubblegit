@@ -63,6 +63,21 @@ type Map struct {
 	// pane rather than adding one.
 	BranchLog []string
 
+	// BranchJump opens the log on every ref with the cursor on the branch's
+	// tip: the branch in its context, where BranchLog shows it alone.
+	BranchJump []string
+
+	// The log view's own keys. LogAll flips an unscoped log between every ref
+	// and HEAD's history. Search opens the prompt; SearchNext and SearchPrev
+	// walk its matches once it is closed. Parent and Child follow the graph
+	// down to the first parent and back up to the nearest child.
+	LogAll     []string
+	Search     []string
+	SearchNext []string
+	SearchPrev []string
+	Parent     []string
+	Child      []string
+
 	// Confirm only means anything while the message editor has focus. It is
 	// not "enter": enter is a newline in a multi-line message, and a commit
 	// message body is the normal case, not the rare one.
@@ -135,6 +150,16 @@ func Default() Map {
 		// editor owns it as a newline, but the editor only opens from the
 		// status view.
 		BranchLog: []string{"enter"},
+		// "space" is free in the branch view: nothing there is stageable.
+		BranchJump: []string{"space"},
+
+		// "a" again, as the stash view does: the log has no hunks to stage.
+		LogAll:     []string{"a"},
+		Search:     []string{"/"},
+		SearchNext: []string{"n"},
+		SearchPrev: []string{"N"},
+		Parent:     []string{"["},
+		Child:      []string{"]"},
 
 		Confirm: []string{"ctrl+s"},
 		Cancel:  []string{"esc"},
@@ -220,10 +245,20 @@ func (m Map) Bindings() [][]Binding {
 			{m.Confirm, "confirm (editor)"},
 			{m.Cancel, "cancel (editor)"},
 		},
+		// The log keys ride in the branch group rather than one of their own:
+		// the popup has seventeen rows on an 80x24 terminal and a new group
+		// costs a blank row, which spills a fourth column off the box. The
+		// paired keys are one row each, spelled the way the footer spells the
+		// view keys.
 		{
 			{m.Branch, "checkout branch"},
 			{m.BranchLog, "log this branch"},
+			{m.BranchJump, "tip in log"},
 			{m.Cancel, "branch list"},
+			{m.LogAll, "all / HEAD"},
+			{m.Search, "search log"},
+			{[]string{m.SearchNext[0] + " / " + m.SearchPrev[0]}, "next/prev match"},
+			{[]string{m.Parent[0] + " / " + m.Child[0]}, "parent / child"},
 		},
 		{
 			{m.StatusView, "status view"},

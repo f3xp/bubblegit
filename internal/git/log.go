@@ -66,9 +66,32 @@ func Log(ctx context.Context, r *Runner, from []string, n int) ([]Commit, error)
 	return parseLog(SplitZ(out)), nil
 }
 
+// Tips returns the commit every branch, remote-tracking ref and tag points at,
+// plus HEAD: the set `git log --all` would start its walk from, minus the
+// stash. One process, peeled and deduplicated by git, so an annotated tag
+// yields the commit it tags rather than the tag object, which no log page
+// would ever match.
+//
+// ponytail: the tips go on the log command line, ~41 bytes each. Switch Log to
+// --stdin past a few thousand refs.
+func Tips(ctx context.Context, r *Runner) ([]string, error) {
+	out, err := r.Run(ctx, "rev-list", "--no-walk", "--branches", "--remotes", "--tags", "HEAD")
+	if err != nil {
+		if h, herr := ReadHead(ctx, r); herr == nil && h.Commit == "" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
+
 // Frontier returns the tips a paged walk has to resume from: every parent of a
-// loaded commit that is not itself loaded. An empty result means the history
-// is exhausted.
+// loaded commit that is not itself loaded, plus any tip of the walk not yet
+// loaded. An empty result means the history is exhausted.
+//
+// The tips matter when the walk started from every ref rather than from one:
+// a stale branch whose tip is older than the first page is nobody's parent,
+// so without them no page would ever reach it.
 //
 // Resuming from the last SHA on screen — the obvious cursor — is wrong on any
 // history containing a merge. `git log <sha>` walks that commit's ancestry,
@@ -80,7 +103,7 @@ func Log(ctx context.Context, r *Runner, from []string, n int) ([]Commit, error)
 // This is the queue git's own walk would be holding, rebuilt from the parent
 // SHAs the log already carries, so it costs no extra read. It stays small:
 // one entry per line of history still open, not one per commit.
-func Frontier(commits []Commit) []string {
+func Frontier(commits []Commit, tips ...string) []string {
 	loaded := make(map[string]bool, len(commits))
 	for _, c := range commits {
 		loaded[c.SHA] = true
@@ -88,13 +111,19 @@ func Frontier(commits []Commit) []string {
 
 	var out []string
 	seen := make(map[string]bool)
+	add := func(sha string) {
+		if !loaded[sha] && !seen[sha] {
+			seen[sha] = true
+			out = append(out, sha)
+		}
+	}
 	for _, c := range commits {
 		for _, p := range c.Parents {
-			if !loaded[p] && !seen[p] {
-				seen[p] = true
-				out = append(out, p)
-			}
+			add(p)
 		}
+	}
+	for _, t := range tips {
+		add(t)
 	}
 	return out
 }

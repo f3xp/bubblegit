@@ -39,13 +39,14 @@ and removes; the pane title sums them. `t` toggles the diff between the worktree
 side, and the diff pane title says which side you are looking at.
 
 **Log (`2`).** The selected commit on the left, commits with a graph column and their ref
-labels on the right. It
-walks from HEAD, or from a branch when opened with `enter` from the branch view, in which case
-the pane title names the branch. `esc` goes back to the branch list, and `2` returns the log to
-HEAD. The
-commit is its message and its patch, highlighted the same way a working-tree diff is. A merge
-shows what it brought in over its first parent. The initial commit shows its whole tree. Nothing
-in this view writes, so the staging and commit keys do nothing here.
+labels on the right. It walks every ref, and `a` narrows it to HEAD's history and back; the pane
+title names which. Opened with `enter` from the branch view it walks that branch alone, with the
+branch in the title, and `esc` goes back to the branch list; `2` returns the log to every ref.
+`/` searches the subject, author, hash and refs as you type, `enter` jumps to the next match and
+`n`/`N` walk them; `esc` drops the search. `[` follows a commit to its first parent and `]` back
+up to its nearest child. The commit is its message and its patch, highlighted the same way a
+working-tree diff is. A merge shows what it brought in over its first parent. The initial commit
+shows its whole tree. Nothing in this view writes, so the staging and commit keys do nothing here.
 
 The graph column reads as follows:
 
@@ -53,10 +54,15 @@ The graph column reads as follows:
 | --- | --- |
 | `●` | a commit |
 | `◆` | a merge |
-| `│` | a line of history passing this row |
+| `│` | a line of history passing this row, in its lane's colour |
 | `╮` `╭` | a merge pulling in a branch, which continues below |
 | `┤` `├` | a branch joining a line of history that is already drawn |
-| `(main)` | branches and tags on this commit, as `git log --decorate` prints them |
+| `┬` `┼` | a merge's run passing a lane on its way to a farther one |
+| `╭╯` | a lane sliding into the column freed above it |
+| `main` | a local branch, as a yellow pill; `★` marks the one HEAD is on |
+| `origin/main` | a remote-tracking ref, in blue |
+| `v1` | a tag, in green |
+| `+2` | two more refs on this commit than the row has room for |
 
 **Branches (`3`).** The tip commit of the selected branch on the left, local branches on the
 right. The view opens on the branch you are on. Only local branches are listed, since a
@@ -126,12 +132,22 @@ index alone, so `U` then `D` is a full reset to HEAD.
 
 The editor owns every other key while it is open, so `q` types a q.
 
+**Log**
+
+| Key | Action |
+| --- | --- |
+| `a` | toggle between every ref and HEAD's history |
+| `/` | search; `enter` jumps to the next match, `esc` closes |
+| `n` `N` | next and previous match |
+| `[` `]` | first parent, nearest child |
+
 **Branches**
 
 | Key | Action |
 | --- | --- |
 | `b` | check out the branch under the cursor |
 | `enter` | open the log view on the branch under the cursor |
+| `space` | open the log view on every ref, with the cursor on the branch's tip |
 | `esc` | in a branch log, back to the branch list |
 
 There is no confirmation step. A switch is reversible, and the one way it loses work is the

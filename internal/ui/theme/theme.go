@@ -22,15 +22,21 @@ var (
 
 	Selected = lipgloss.NewStyle().Background(lipgloss.Color("#43293a"))
 
-	// Ref colours the branch and tag names beside a commit in the log, the
-	// yellow git itself uses for decorations.
-	Ref = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
+	// Match marks the text a log search matched, in the row itself.
+	Match = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("#f9e2af"))
 
-	// Branch is the badge for HEAD in the app header: the same yellow as Ref,
-	// but as a filled block, since which branch is checked out is the one
-	// thing worth reading before touching the index.
+	// Branch is the badge for HEAD in the app header and the pill for a local
+	// branch beside a commit in the log: the yellow git itself uses for
+	// decorations, as a filled block, since which branch is checked out is the
+	// one thing worth reading before touching the index.
 	Branch = lipgloss.NewStyle().Bold(true).Padding(0, 1).
 		Foreground(lipgloss.Color("#1e1e2e")).Background(lipgloss.Color("#f9e2af"))
+
+	// Remote and Tag are the other two kinds of pill a log row carries. Same
+	// shape as Branch so the three read as one family, in the blue and green
+	// git colours remotes and tags by default.
+	Remote = Branch.Background(lipgloss.Color("#89b4fa"))
+	Tag    = Branch.Background(lipgloss.Color("#a6e3a1"))
 
 	// Rule is the line under a pane title. It takes the unfocused border
 	// colour whatever the focus: the border already says which pane is
@@ -42,9 +48,9 @@ var (
 	Title    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#cdd6f4"))
 	TitleDim = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))
 
-	// Authors are the colours an author's tag and graph node in the log can
-	// take. None of them is the pink of the hash or the grey of the date and
-	// lane lines, so a node never blends into its neighbours.
+	// Authors are the colours an author's tag in the log can take, and the
+	// palette the graph lanes cycle through. None of them is the pink of the
+	// hash, so a node never blends into its neighbours.
 	Authors = []lipgloss.Style{
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1")),
@@ -62,6 +68,13 @@ func Author(name string) lipgloss.Style {
 	h := fnv.New32a()
 	h.Write([]byte(name))
 	return Authors[int(h.Sum32()%uint32(len(Authors)))]
+}
+
+// Lane returns the style for graph column i. Columns cycle through the
+// palette, so two lanes far enough apart can share a colour; what matters is
+// that neighbouring lanes never do.
+func Lane(i int) lipgloss.Style {
+	return Authors[i%len(Authors)]
 }
 
 // keepBG is a reset that leaves the background alone: default foreground, and

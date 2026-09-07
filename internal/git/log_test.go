@@ -2,6 +2,8 @@ package git_test
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -127,6 +129,76 @@ func TestFrontierEndsAtRoot(t *testing.T) {
 	}
 	if from := git.Frontier(commits[:1]); len(from) != 2 {
 		t.Errorf("the frontier below a merge is %v, want both its parents", from)
+	}
+}
+
+// TestFrontierIncludesUnloadedTips: an all-refs walk resumes from its tips
+// too, since a tip older than the first page is nobody's parent.
+func TestFrontierIncludesUnloadedTips(t *testing.T) {
+	loaded := []git.Commit{{SHA: "C", Parents: []string{"B"}}}
+	got := git.Frontier(loaded, "C", "Z", "Z")
+	if strings.Join(got, " ") != "B Z" {
+		t.Errorf("frontier is %v, want the parent and the one unloaded tip, once", got)
+	}
+}
+
+// TestLogAllPagesReachOldTips pins why the tips are carried: a branch whose
+// tip predates everything on the first page is reached only because the
+// frontier names it. Paged two at a time so the fixture's four commits leave
+// the orphan behind the first page.
+func TestLogAllPagesReachOldTips(t *testing.T) {
+	ctx := context.Background()
+	dir := gittest.Small(t)
+	r := git.New(dir)
+
+	cmd := exec.Command("git", "-C", dir, "commit-tree", "HEAD^{tree}", "-m", "orphan")
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.com",
+		"GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.com",
+		"GIT_AUTHOR_DATE=2001-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2001-01-01T00:00:00Z")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan := strings.TrimSpace(string(out))
+	if _, err := r.Run(ctx, "update-ref", "refs/heads/orphan", orphan); err != nil {
+		t.Fatal(err)
+	}
+
+	tips, err := git.Tips(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	walk := func(withTips bool) (found bool) {
+		var loaded []git.Commit
+		from := tips
+		for range 10 {
+			page, err := git.Log(ctx, r, from, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded = append(loaded, page...)
+			for _, c := range page {
+				if c.SHA == orphan {
+					return true
+				}
+			}
+			if withTips {
+				from = git.Frontier(loaded, tips...)
+			} else {
+				from = git.Frontier(loaded)
+			}
+			if len(page) == 0 || len(from) == 0 {
+				return false
+			}
+		}
+		return false
+	}
+	if !walk(true) {
+		t.Error("paging with the tips never reached the old branch")
+	}
+	if walk(false) {
+		t.Error("paging without the tips reached the old branch, so the tips are not what makes it reachable")
 	}
 }
 

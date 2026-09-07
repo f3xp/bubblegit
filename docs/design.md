@@ -91,11 +91,39 @@ The graph column is drawn from the parent SHAs the log already carries, so it co
 git call. `git log --graph` was rejected: it imposes its own ordering and padding, and it does
 not compose with the `-z` cursor paging above. Each commit is one row; where it joins another
 lane — a merge pulling a branch in, or a branch's history continuing in a lane that is already
-open — the join is drawn as a horizontal run on that same row. Lanes are never compacted when
-one ends: a column means the same line of history all the way down the page, and closing the
-gap would slide every lane sideways mid-scroll. Only downward lines are drawn; when two commits
-share a timestamp git may list a parent above its child, and that link is left out rather than
-drawn to the wrong lane. Ref labels ride along on the same `git log` through `%D`.
+open — the join is drawn as a horizontal run on that same row. When a lane ends, the lanes to
+its right slide one column left on the rows that follow, drawn as a `╭╯` bend, so the graph
+stays as narrow as the history under it. One column per row rather than all at once: a single
+bend never crosses another, where a `╭┼╯` would read as a join. The graph is still built over
+the whole loaded list, so the slide is decided by the history above it and not by where the
+screen happens to be. Each column has a colour of its own, and a run or a bend takes the colour
+of the lane it lands in, so one line of history reads as one colour from the merge that opened
+it to the fork it slides into. The node's author is on the initials tag beside the hash, not on
+the node.
+
+Only downward lines are drawn. git lists commits newest first, which puts every child above its
+parent except when their timestamps tie — a rebased series, a bot, a fixture — and there git may
+emit the parent first. The loaded list is reordered so a commit sits below every loaded child of
+its, and everything else keeps git's order. `--topo-order` would settle it for good and walks the
+whole history before printing a row on a repository without a commit-graph, which the paging
+budget forbids; a child on a later page than its parent still draws as a lane ending.
+
+Ref labels ride along on the same `git log` through `%D`, split into pills: a local branch, a
+remote-tracking ref, a tag, each its own colour, `★` on the one HEAD is on, and past two of them
+a count, because a release commit with five tags would otherwise push its subject off the pane.
+
+An unscoped log walks every ref rather than HEAD's history, since a graph is what you open to see
+the branches against each other. The seed is one `rev-list --no-walk` over the refs, and it
+travels with the first page: a resumed walk has to name the tips it has not reached as well as
+the parents it has not read, or a stale branch whose tip is older than the first page is nobody's
+parent and no page ever reaches it. `a` flips the walk to HEAD alone; a branch-scoped log ignores
+it, having already named its history.
+
+Search, the parent key and the branch view's jump to a tip are all the same thing underneath: a
+target the loaded pages may not hold yet. One resolver checks the list, asks for the next page
+when the target is not there, and lands when the page that holds it arrives, so "page until found"
+is written once rather than once per key. The child key and the previous match never page: a
+child is always above its parent, and everything above the cursor is loaded.
 
 ## Branches
 

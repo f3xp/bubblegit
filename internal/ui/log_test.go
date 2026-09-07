@@ -60,18 +60,184 @@ func TestLogViewShowsCommitsAndGraph(t *testing.T) {
 	}
 
 	body := ansi.Strip(h.m.Body())
-	for _, want := range []string{"Log (4)", "merge feature into main", "◆", "FI"} {
+	for _, want := range []string{"Log — all (4)", "merge feature into main", "◆", "FI"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the log view is missing %q:\n%s", want, body)
 		}
 	}
 
-	// Asserted on the pane rather than the frame, and on a node beside a lane
-	// rather than on a bare "│": the rounded pane border draws that same
-	// character, so a whole-frame check for it passes with no graph at all.
+	// Asserted on the pane rather than the frame, and on the merge opening a
+	// lane and the side branch joining back rather than on a bare "│": the
+	// rounded pane border draws that same character, so a whole-frame check
+	// for it passes with no graph at all.
 	graph := ansi.Strip(h.m.log.View())
-	if !strings.Contains(graph, "●│") && !strings.Contains(graph, "│●") {
+	if !strings.Contains(graph, "◆╮") || !strings.Contains(graph, "├●") {
 		t.Errorf("the side branch has no lane of its own:\n%s", graph)
+	}
+}
+
+// TestLogDefaultsToAllAndToggles: the log opens on every ref, the title says
+// so, and the log view's own key flips it to HEAD's history and back.
+func TestLogDefaultsToAllAndToggles(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog()
+	if title := h.m.listTitle().String(); title != "Log — all (4)" {
+		t.Fatalf("the log opened titled %q, want every ref", title)
+	}
+	gen := h.m.logGen
+	h.run(h.key("a"))
+	if title := h.m.listTitle().String(); title != "Log — HEAD (4)" {
+		t.Errorf("after a the log is titled %q, want HEAD", title)
+	}
+	if h.m.logGen == gen {
+		t.Error("the toggle did not re-read the log")
+	}
+	h.run(h.key("a"))
+	if title := h.m.listTitle().String(); title != "Log — all (4)" {
+		t.Errorf("a second a titled the log %q, want every ref again", title)
+	}
+}
+
+// TestLogSearchPagesUntilFound: a query with no match on the loaded pages
+// asks for the next one and lands when it arrives. Along the way it pins the
+// prompt as a mode — a j typed into it is a letter, not a motion.
+func TestLogSearchPagesUntilFound(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog()
+	page1, page2 := commitsFor(200)[:100], commitsFor(200)[100:]
+	h.send(logMsg{gen: h.m.logGen, commits: page1})
+
+	h.key("/")
+	if !h.m.logPrompt {
+		t.Fatal("/ did not open the search prompt")
+	}
+	// The subjects are empty, so the short SHA is what a query can hit.
+	want := page2[5]
+	h.typeText("j")
+	if h.m.log.SelectedSHA() != page1[0].SHA || h.m.logQuery != "j" {
+		t.Errorf("a j typed into the prompt moved the cursor, or was not typed: query %q", h.m.logQuery)
+	}
+	h.setQuery(want.Short)
+
+	cmd := h.enter()
+	if h.m.logPrompt {
+		t.Error("enter left the prompt open")
+	}
+	if cmd == nil || !h.m.logWant.search {
+		t.Fatal("a query with no match on the loaded page did not ask for the next one")
+	}
+	h.send(logMsg{gen: h.m.logGen, more: true, commits: page2})
+	if h.m.log.SelectedSHA() != want.SHA {
+		t.Errorf("the search landed on %q, want %q from the second page", h.m.log.SelectedSHA(), want.Short)
+	}
+	if h.m.logWant.pending() {
+		t.Error("the jump is still pending after landing")
+	}
+	// The prompt row stays while the query is in force, and shows which match
+	// the cursor is on.
+	if view := ansi.Strip(h.m.log.View()); !strings.Contains(view, "/ "+want.Short+"  1/1") {
+		t.Errorf("the prompt row does not show the query and its count:\n%s", view)
+	}
+	h.maybeRun(h.esc())
+	if h.m.logQuery != "" {
+		t.Error("escape did not drop the query")
+	}
+	if h.m.view != viewLog {
+		t.Error("escape with a query in force left the view")
+	}
+}
+
+// setQuery replaces what the prompt holds, for a test that wants a known
+// query without spelling every keystroke.
+func (h *harness) setQuery(q string) {
+	h.t.Helper()
+	for h.m.logQuery != "" {
+		h.send(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	h.typeText(q)
+	if h.m.logQuery != q {
+		h.t.Fatalf("the prompt holds %q after typing %q", h.m.logQuery, q)
+	}
+}
+
+// TestLogSearchWalksMatches: n and N move between the matches of a query the
+// prompt has closed on, in both directions.
+func TestLogSearchWalksMatches(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog()
+	h.key("/")
+	h.typeText("FIXTURE") // every fixture commit is by "fixture"; case must not matter
+	h.run(h.enter())
+	first := h.m.log.SelectedSHA()
+	h.run(h.key("n"))
+	second := h.m.log.SelectedSHA()
+	if first == second {
+		t.Fatal("n did not move to the next match")
+	}
+	h.run(h.key("N"))
+	if h.m.log.SelectedSHA() != first {
+		t.Error("N did not come back to the previous match")
+	}
+}
+
+// TestLogParentAndChildJump: [ follows the first parent down, ] the nearest
+// child back up; and a parent below the loaded pages is paged to.
+func TestLogParentAndChildJump(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog()
+	h.selectCommit("merge feature into main")
+	merge := h.m.log.SelectedSHA()
+
+	h.run(h.key("["))
+	if c, _ := h.m.log.Selected(); c.Subject != "edit plain.txt" {
+		t.Fatalf("[ landed on %q, want the merge's first parent", c.Subject)
+	}
+	// The edit has two children, the feature commit and the merge; the
+	// nearest one above is the feature commit, and its own child is the merge.
+	h.run(h.key("]"))
+	if c, _ := h.m.log.Selected(); c.Subject != "add feature.txt" {
+		t.Fatalf("] landed on %q, want the nearest child above", c.Subject)
+	}
+	h.run(h.key("]"))
+	if h.m.log.SelectedSHA() != merge {
+		t.Error("a second ] did not reach the merge")
+	}
+
+	// A first page whose last commit's parent is not loaded: [ on it asks for
+	// the next page and lands when it arrives.
+	pages := commitsFor(200)
+	h.send(logMsg{gen: h.m.logGen, commits: pages[:100]})
+	h.m.log.Bottom()
+	if cmd := h.key("["); cmd == nil {
+		t.Fatal("[ on a commit whose parent is not loaded did not ask for a page")
+	}
+	h.send(logMsg{gen: h.m.logGen, more: true, commits: pages[100:]})
+	if h.m.log.SelectedSHA() != pages[100].SHA {
+		t.Errorf("[ landed on %q, want the parent from the next page", h.m.log.SelectedSHA())
+	}
+}
+
+// TestBranchJumpLandsOnTip: space in the branch view opens the log on every
+// ref with the cursor on that branch's tip, so the branch is seen in context
+// rather than alone.
+func TestBranchJumpLandsOnTip(t *testing.T) {
+	h := newHarness(t)
+	h.enterBranches()
+	h.selectBranch("behind")
+	sel, _ := h.m.branches.Selected()
+
+	h.run(h.key(" "))
+	if h.m.view != viewLog {
+		t.Fatal("space did not open the log view")
+	}
+	if title := h.m.listTitle().String(); title != "Log — all (4)" {
+		t.Errorf("the log is titled %q, want every ref", title)
+	}
+	if h.m.log.SelectedSHA() != sel.SHA {
+		t.Errorf("the cursor is on %q, want the tip of behind %q", h.m.log.SelectedSHA(), sel.Short)
+	}
+	if !strings.Contains(h.m.detail.Title(), sel.Short) {
+		t.Errorf("the detail pane shows %q, want the tip", h.m.detail.Title())
 	}
 }
 
@@ -252,7 +418,7 @@ func TestNarrowLogViewSwapsPanes(t *testing.T) {
 		t.Fatal("a 40-column terminal is not narrow enough to drop a pane")
 	}
 	body := ansi.Strip(h.m.Body())
-	if !strings.Contains(body, "Log (") {
+	if !strings.Contains(body, "Log — all (") {
 		t.Errorf("the log pane is not the visible one:\n%s", body)
 	}
 

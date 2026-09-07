@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -40,8 +41,8 @@ const refreshInterval = 10 * time.Second
 // each view. The left pane is the document in every view, so this is the
 // document's share. The status view gives its diff the most: a file row is a
 // status code and a path and is content with a third. A log row carries a
-// graph, a SHA, a date and a subject, and a branch row a name, a tracking
-// count, a date and a subject, so those two lists need half.
+// graph, a SHA, an author tag, ref pills and a subject, and a branch row a
+// name, a tracking count, a date and a subject, so those two lists need half.
 //
 // It is where each view starts, not where it stays: the splitter moves them.
 var splitDefaults = [...]float64{
@@ -140,7 +141,10 @@ type logMsg struct {
 	gen     uint64
 	commits []git.Commit
 	more    bool
-	err     error
+	// tips are the refs an all-refs first page walked from, so later pages
+	// can resume from the ones it never reached.
+	tips []string
+	err  error
 }
 
 // checkoutMsg reports that a switch finished. Like stagedMsg it carries no
@@ -236,6 +240,23 @@ type Model struct {
 	// that silently changed which history it showed would read as a bug.
 	logRef string
 
+	// logAll makes an unscoped log walk every ref rather than HEAD's history,
+	// the way a graph is usually read. Flipped by the log view's own key and
+	// ignored while logRef scopes the walk to one branch.
+	logAll bool
+
+	// logPrompt is true while the search prompt takes keystrokes; logQuery is
+	// what has been typed, and stays in force after the prompt closes so n
+	// and N have something to walk.
+	logPrompt bool
+	logQuery  string
+
+	// logWant is a jump the loaded pages could not answer yet — a parent or a
+	// branch tip below the last page, or a search with no match so far. It is
+	// resolved by seekLog when each page lands, so "page until found" is
+	// written once for every kind of jump.
+	logWant logWant
+
 	// branchesLoaded is logLoaded's counterpart, and is cleared for the same
 	// reasons: a commit moves the current branch's tip and its ahead count, so
 	// the list on screen describes a branch that has moved on.
@@ -297,6 +318,15 @@ type Model struct {
 	confirm confirm
 }
 
+// logWant is one pending jump: a SHA to land on, or the next match of the
+// search in force. The zero value is no jump.
+type logWant struct {
+	sha    string
+	search bool
+}
+
+func (w logWant) pending() bool { return w.sha != "" || w.search }
+
 // confirm is a pending yes/no. do runs on yes; a nil do is no question.
 //
 // A line in the key bar rather than a dialog: the bar is where the eye already
@@ -318,6 +348,7 @@ func New(root string) Model {
 		repo:   git.New(root),
 		keys:   keys.Default(),
 		watch:  w,
+		logAll: true,
 		diff:   pane.NewDiff(),
 		commit: pane.NewCommit(),
 		detail: pane.NewDetail(),
@@ -451,12 +482,24 @@ func (m *Model) loadLog() tea.Cmd {
 	if m.logRef != "" {
 		from = []string{m.logRef}
 	}
+	all := m.logRef == "" && m.logAll
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
+		var tips []string
+		if all {
+			// A second process, like the status read's numstat: the walk is
+			// seeded from every ref, and the seed travels with the page so
+			// later pages can resume from the tips this one never reached.
+			var err error
+			if tips, err = git.Tips(ctx, repo); err != nil {
+				return logMsg{gen: gen, err: err}
+			}
+			from = tips
+		}
 		commits, err := git.Log(ctx, repo, from, git.LogPageSize)
-		return logMsg{gen: gen, commits: commits, err: err}
+		return logMsg{gen: gen, commits: commits, tips: tips, err: err}
 	}
 }
 
@@ -692,12 +735,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clearing logLoaded makes leaving the view and coming back retry.
 			m.log.SetEnd(true)
 			m.logLoaded = false
+			m.logWant = logWant{}
 			return m, nil
 		}
 		if msg.more {
 			m.log.Append(msg.commits)
 		} else {
 			m.logLoaded = true
+			m.log.SetTips(msg.tips)
 			m.log.SetCommits(msg.commits)
 		}
 		// The history is exhausted once no loaded commit has an unloaded
@@ -705,6 +750,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a walk which somehow returns nothing would be re-requested on every
 		// keystroke, forever.
 		m.log.SetEnd(len(msg.commits) == 0 || len(m.log.Frontier()) == 0)
+		// A pending jump either lands on this page, which loads its detail,
+		// or asks for the next one.
+		if cmd := m.seekLog(); cmd != nil {
+			return m, cmd
+		}
 		if msg.more {
 			return m, nil
 		}
@@ -814,6 +864,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// bindings, because those bindings are single letters.
 	if m.commit.Active() {
 		return m.handleCommitKey(msg, k)
+	}
+
+	// The search prompt is a mode too, for the same reason: what it takes
+	// are the letters the bindings are made of.
+	if m.logPrompt {
+		return m.handleSearchKey(msg, k)
 	}
 
 	switch {
@@ -992,8 +1048,26 @@ func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
 	//
 	// Before the focus routing, so it works from either pane — backing out is
 	// about the view, the way the view keys are, not about what has focus.
+	//
+	// A search in force is dropped first: escape leaves the thing most
+	// recently opened, and the prompt row was opened after the view was.
+	if keys.Matches(m.keys.Cancel, k) && m.logQuery != "" {
+		m.setSearch("", false)
+		return m, nil
+	}
 	if keys.Matches(m.keys.Cancel, k) && m.logRef != "" {
 		return m.setView(viewBranches)
+	}
+
+	// Which history an unscoped log walks is a property of the view, like
+	// backing out is, so it works from either pane. A scoped log already
+	// names its history and the key is inert there.
+	if keys.Matches(m.keys.LogAll, k) {
+		if m.logRef != "" {
+			return m, nil
+		}
+		m.logAll, m.logLoaded = !m.logAll, false
+		return m, m.loadLog()
 	}
 
 	if m.focus == focusDoc {
@@ -1002,6 +1076,32 @@ func (m Model) handleLogKey(k string) (tea.Model, tea.Cmd) {
 
 	before := m.log.SelectedSHA()
 	switch {
+	case keys.Matches(m.keys.Search, k):
+		m.setSearch("", true)
+		return m, nil
+	case keys.Matches(m.keys.SearchNext, k):
+		if m.logQuery == "" {
+			return m, nil
+		}
+		m.logWant = logWant{search: true}
+		return m, m.seekLog()
+	case keys.Matches(m.keys.SearchPrev, k):
+		// Everything above the cursor is loaded, so this never pages.
+		if i := m.log.FindPrev(m.logQuery); i >= 0 {
+			m.log.MoveTo(i)
+		}
+	case keys.Matches(m.keys.Parent, k):
+		c, ok := m.log.Selected()
+		if !ok || len(c.Parents) == 0 {
+			return m, nil
+		}
+		m.logWant = logWant{sha: c.Parents[0]}
+		return m, m.seekLog()
+	case keys.Matches(m.keys.Child, k):
+		// A child is always above its parent, so like N this never pages.
+		if i := m.log.ChildOf(m.log.SelectedSHA()); i >= 0 {
+			m.log.MoveTo(i)
+		}
 	case keys.Matches(m.keys.Down, k):
 		m.log.MoveBy(1)
 	case keys.Matches(m.keys.Up, k):
@@ -1044,6 +1144,71 @@ func (m *Model) afterLogMove(before string) tea.Cmd {
 		cmds = append(cmds, m.loadDetail())
 	}
 	return tea.Batch(cmds...)
+}
+
+// seekLog resolves the pending jump against the pages loaded so far. It lands
+// the cursor when the target is there, asks for the next page when it is not
+// and there is more history, and gives the jump up at the end of the log. A
+// nil while a page is in flight leaves the jump pending for the page to
+// answer, which is what makes one resolver serve a search, a parent and a
+// branch tip alike.
+func (m *Model) seekLog() tea.Cmd {
+	if !m.logWant.pending() {
+		return nil
+	}
+	i := m.log.IndexOf(m.logWant.sha)
+	if m.logWant.search {
+		i = m.log.FindNext(m.logQuery)
+	}
+	if i < 0 {
+		if m.log.AtEnd() {
+			m.logWant = logWant{}
+			return nil
+		}
+		return m.loadMoreLog()
+	}
+	m.logWant = logWant{}
+	before := m.log.SelectedSHA()
+	m.log.MoveTo(i)
+	return m.afterLogMove(before)
+}
+
+// setSearch keeps the model's search state and the pane's prompt row in step.
+func (m *Model) setSearch(query string, editing bool) {
+	m.logQuery, m.logPrompt = query, editing
+	m.log.SetSearch(query, editing)
+}
+
+// handleSearchKey routes the search prompt while it is open: enter closes it
+// and jumps to the first match below the cursor, escape closes it and drops
+// the query, and everything else types.
+func (m Model) handleSearchKey(msg tea.KeyPressMsg, k string) (tea.Model, tea.Cmd) {
+	switch {
+	case k == "ctrl+c":
+		return m, tea.Quit
+	case keys.Matches(m.keys.Cancel, k):
+		m.setSearch("", false)
+		return m, nil
+	case k == "enter":
+		m.setSearch(m.logQuery, false)
+		if m.logQuery == "" {
+			return m, nil
+		}
+		m.logWant = logWant{search: true}
+		return m, m.seekLog()
+	case k == "backspace":
+		q := m.logQuery
+		if q != "" {
+			_, n := utf8.DecodeLastRuneInString(q)
+			q = q[:len(q)-n]
+		}
+		m.setSearch(q, true)
+		return m, nil
+	case msg.Text != "":
+		m.setSearch(m.logQuery+msg.Text, true)
+		return m, nil
+	}
+	return m, nil
 }
 
 // handleDetailKey scrolls the commit pane. It is shared by the log and branch
@@ -1089,14 +1254,24 @@ func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
-		// Scoping to the branch you are on is the same history HEAD walks, so
-		// it is left unscoped rather than titled with a name that adds
-		// nothing.
-		m.logRef = ""
-		if !sel.Current {
-			m.logRef = sel.Name
-		}
+		// The current branch is scoped like any other: an unscoped log walks
+		// every ref by default, so "the same history HEAD walks" no longer
+		// describes it.
+		m.logRef = sel.Name
 		m.logLoaded = false
+		return m.setView(viewLog)
+
+	// The other way into the log: every ref, with the cursor on this branch's
+	// tip. Always a fresh read — the list on screen may be HEAD-only, or
+	// scoped — and the tip is a pending jump, so a tip below the first page
+	// is paged to rather than missed.
+	case keys.Matches(m.keys.BranchJump, k):
+		sel, ok := m.branches.Selected()
+		if !ok {
+			return m, nil
+		}
+		m.logRef, m.logAll, m.logLoaded = "", true, false
+		m.logWant = logWant{sha: sel.SHA}
 		return m.setView(viewLog)
 	case keys.Matches(m.keys.Down, k):
 		m.branches.MoveBy(1)
@@ -1923,7 +2098,14 @@ func (m Model) listTitle() title {
 		// The ref comes before the count so a narrow pane truncates the
 		// number rather than the name: which history this is matters more
 		// than how much of it has been read.
-		t := title{name: "Log", subject: m.logRef}
+		scope := m.logRef
+		if scope == "" {
+			scope = "HEAD"
+			if m.logAll {
+				scope = "all"
+			}
+		}
+		t := title{name: "Log", subject: scope}
 		if n := m.log.Len(); n > 0 {
 			// A trailing + means the count is what has been read so far, not
 			// how many commits the repository has.

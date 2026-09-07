@@ -1,6 +1,7 @@
 package pane
 
 import (
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -10,29 +11,59 @@ import (
 	"github.com/f3xp/bubblegit/internal/ui/theme"
 )
 
-// maxLanes caps the graph column. A repository with dozens of concurrent
-// branches would otherwise spend the whole pane on vertical bars; past this
-// many, commits are drawn in the last column and the topology is read from
-// the detail pane instead.
-const maxLanes = 6
-
 // Log lists commits with a lane graph down the left.
 type Log struct {
 	list
 	commits []git.Commit
 	graph   []graphRow
+	// graphW is the widest row of the graph, so every row is padded to it and
+	// the hash column lines up down the page.
+	graphW int
 
 	// end marks the log as fully loaded, so scrolling to the bottom stops
 	// asking for a page that does not exist.
 	end bool
+
+	// tips are the refs the walk started from, so a page can resume from a
+	// tip the first page never reached. Empty for a single-ref walk.
+	tips []string
+
+	// query is the search in force; its matches are highlighted and n/N walk
+	// them. editing is true while the prompt still takes keystrokes. Either
+	// one puts the prompt row at the bottom of the pane, which is why the
+	// pane keeps its full height apart from the list's.
+	query   string
+	editing bool
+	fullH   int
 }
 
+// SetSize gives the prompt row its line back out of the list's height.
+func (l *Log) SetSize(w, h int) {
+	l.fullH = h
+	if l.promptShown() {
+		h--
+	}
+	l.list.SetSize(w, h)
+}
+
+func (l *Log) promptShown() bool { return l.editing || l.query != "" }
+
+// SetSearch sets the query and whether it is still being typed.
+func (l *Log) SetSearch(query string, editing bool) {
+	l.query, l.editing = query, editing
+	l.SetSize(l.width, l.fullH)
+}
+
+func (l *Log) SetTips(tips []string) { l.tips = tips }
+
 // graphRow is one commit's place in the lane graph: the column its node sits
-// in, and one glyph per lane — the node itself, a line passing by, or the
-// connector that joins the node to another lane on this row.
+// in, one glyph per lane — the node itself, a line passing by, or the
+// connector that joins the node to another lane on this row — and the lane
+// each glyph takes its colour from.
 type graphRow struct {
 	col   int
 	cells []rune
+	lane  []int
 }
 
 func (l *Log) AtEnd() bool   { return l.end }
@@ -42,8 +73,8 @@ func (l *Log) SetEnd(v bool) { l.end = v }
 // still exists — a reload after a commit must not walk the selection away.
 func (l *Log) SetCommits(commits []git.Commit) {
 	want := l.SelectedSHA()
-	l.commits = commits
-	l.graph = buildGraph(commits)
+	l.commits = childrenFirst(commits)
+	l.setGraph(buildGraph(l.commits))
 	l.cursor = 0
 	for i, c := range commits {
 		if c.SHA == want {
@@ -80,8 +111,60 @@ func (l *Log) Append(commits []git.Commit) {
 		seen[c.SHA] = true
 		l.commits = append(l.commits, c)
 	}
-	l.graph = buildGraph(l.commits)
+	// A hoisted child can land above the cursor and shift it, so the cursor
+	// is put back on its commit rather than its row.
+	want := l.SelectedSHA()
+	l.commits = childrenFirst(l.commits)
+	if i := l.IndexOf(want); i >= 0 {
+		l.cursor = i
+	}
+	l.setGraph(buildGraph(l.commits))
 	l.setLen(len(l.commits))
+}
+
+// childrenFirst reorders the log so no commit sits below a loaded child of
+// its. git lists commits newest first, which puts children above parents
+// except when their timestamps tie — a rebased series, a bot, a fixture —
+// where git may emit the parent first and the graph would draw a lane ending
+// at a commit whose history continues above it. Each commit is emitted where
+// git put it, after any of its children that were still waiting; everything
+// else keeps git's order.
+//
+// ponytail: this fixes ties within the loaded list only. A child on a later
+// page than its parent still draws as a lane end, as before. --topo-order
+// would fix that too, and walks the whole history first on a repository
+// without a commit-graph, which the paging budget forbids.
+func childrenFirst(commits []git.Commit) []git.Commit {
+	children := make(map[string][]int, len(commits))
+	for i, c := range commits {
+		for _, p := range c.Parents {
+			children[p] = append(children[p], i)
+		}
+	}
+	out := make([]git.Commit, 0, len(commits))
+	done := make([]bool, len(commits))
+	var emit func(i int)
+	emit = func(i int) {
+		if done[i] {
+			return
+		}
+		done[i] = true
+		for _, k := range children[commits[i].SHA] {
+			emit(k)
+		}
+		out = append(out, commits[i])
+	}
+	for i := range commits {
+		emit(i)
+	}
+	return out
+}
+
+func (l *Log) setGraph(g []graphRow) {
+	l.graph, l.graphW = g, 0
+	for _, r := range g {
+		l.graphW = max(l.graphW, len(r.cells))
+	}
 }
 
 func (l *Log) Selected() (git.Commit, bool) {
@@ -101,7 +184,67 @@ func (l *Log) SelectedSHA() string {
 
 // Frontier is where the next page has to resume from. Empty means the history
 // is fully loaded. See git.Frontier for why it is a set rather than one SHA.
-func (l *Log) Frontier() []string { return git.Frontier(l.commits) }
+func (l *Log) Frontier() []string { return git.Frontier(l.commits, l.tips...) }
+
+// IndexOf is the row of a commit, or -1 when it is not loaded.
+func (l *Log) IndexOf(sha string) int {
+	for i, c := range l.commits {
+		if c.SHA == sha {
+			return i
+		}
+	}
+	return -1
+}
+
+// FindNext and FindPrev are the row of the nearest commit below or above the
+// cursor that matches q, or -1. A match is a case-insensitive substring of the
+// subject, author, short SHA or refs.
+func (l *Log) FindNext(q string) int { return l.find(q, l.cursor+1, 1) }
+func (l *Log) FindPrev(q string) int { return l.find(q, l.cursor-1, -1) }
+
+func (l *Log) find(q string, from, step int) int {
+	if q == "" {
+		return -1
+	}
+	for i := from; i >= 0 && i < len(l.commits); i += step {
+		if matches(l.commits[i], q) {
+			return i
+		}
+	}
+	return -1
+}
+
+func matches(c git.Commit, q string) bool {
+	return strings.Contains(strings.ToLower(c.Subject+" "+c.Author+" "+c.Short+" "+c.Refs), strings.ToLower(q))
+}
+
+// matchCounts is how many loaded commits match q, and how many of those sit
+// at or above the cursor — the k of the prompt's k/N.
+func (l *Log) matchCounts(q string) (k, n int) {
+	for i, c := range l.commits {
+		if matches(c, q) {
+			n++
+			if i <= l.cursor {
+				k++
+			}
+		}
+	}
+	return k, n
+}
+
+// ChildOf is the row of the nearest commit above the cursor that has sha as
+// a parent, or -1. Children are always above their parent in the loaded
+// list, so the scan only ever looks upward.
+func (l *Log) ChildOf(sha string) int {
+	for i := l.cursor - 1; i >= 0; i-- {
+		for _, p := range l.commits[i].Parents {
+			if p == sha {
+				return i
+			}
+		}
+	}
+	return -1
+}
 
 // NearEnd reports whether the cursor is close enough to the bottom that the
 // next page should be fetched before the user reaches it.
@@ -127,24 +270,48 @@ func (l *Log) View() string {
 	}
 
 	start, end := l.window()
-	rows := make([]string, 0, end-start)
+	rows := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
 		rows = append(rows, l.row(i))
 	}
+	if l.promptShown() {
+		for len(rows) < l.height {
+			rows = append(rows, "")
+		}
+		rows = append(rows, l.promptRow())
+	}
 	return strings.Join(rows, "\n")
+}
+
+// promptRow is the search line under the list: the query, and which of its
+// matches the cursor is on.
+func (l *Log) promptRow() string {
+	k, n := l.matchCounts(l.query)
+	line := theme.Cursor.Render("/") + " " + l.query
+	if l.editing {
+		line += theme.Cursor.Render("▏")
+	}
+	if l.query != "" {
+		line += "  " + theme.Dim.Render(strconv.Itoa(k)+"/"+strconv.Itoa(n))
+	}
+	if l.width > 0 {
+		line = ansi.Truncate(line, l.width, "…")
+	}
+	return line
 }
 
 func (l *Log) row(i int) string {
 	c := l.commits[i]
 
-	line := l.graphCell(i) + " " +
-		theme.Meta.Render(c.Short) + " " +
-		theme.Author(c.Author).Render(initials(c.Author)) + " "
-	// Refs go before the subject, where git, tig and lazygit put them.
-	if c.Refs != "" {
-		line += theme.Ref.Render("("+c.Refs+")") + " "
+	short := theme.Meta.Render(c.Short)
+	if l.query != "" && strings.Contains(strings.ToLower(c.Short), strings.ToLower(l.query)) {
+		short = theme.Match.Render(c.Short)
 	}
-	line += c.Subject
+	// Refs go before the subject, where git, tig and lazygit put them.
+	line := l.graphCell(i) + " " +
+		short + " " +
+		theme.Author(c.Author).Render(initials(c.Author)) + " " +
+		refPills(c.Refs) + markMatches(c.Subject, l.query)
 
 	// Truncate on display width, not byte length: the line carries ANSI
 	// escapes and a subject may contain wide characters.
@@ -157,10 +324,34 @@ func (l *Log) row(i int) string {
 	return lipgloss.NewStyle().Width(l.width).Render(line)
 }
 
+// markMatches marks every case-insensitive occurrence of q in the plain text s.
+func markMatches(s, q string) string {
+	if q == "" {
+		return s
+	}
+	lower, lq := strings.ToLower(s), strings.ToLower(q)
+	if len(lower) != len(s) {
+		// Case folding changed the byte length, so the offsets below would
+		// not line up; a row without highlights beats a torn one.
+		return s
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(lower, lq)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString(theme.Match.Render(s[i : i+len(q)]))
+		s, lower = s[i+len(q):], lower[i+len(q):]
+	}
+}
+
 // initials reduces an author name to a two-column tag: first and last name
 // for "Goutham Das" (GD), the first two letters for a lone "goutham" (GO).
-// Always two cells wide so the date column stays aligned, and built from runes
-// so a non-ASCII name does not break it.
+// Always two cells wide so the columns after it stay aligned, and built from
+// runes so a non-ASCII name does not break it.
 func initials(name string) string {
 	words := strings.Fields(name)
 	var tag []rune
@@ -180,44 +371,43 @@ func initials(name string) string {
 	return strings.ToUpper(string(tag))
 }
 
-// graphCell draws one row of the lane graph.
-//
-// Lanes are never compacted when one dies, so a column belongs to the same
-// line of history all the way down the page. Closing the gap would be denser
-// and would slide every lane sideways mid-scroll, which reads as the graph
-// redrawing itself rather than as the history it describes.
+// maxLanes caps the graph column at a third of the pane. A repository with
+// dozens of concurrent branches would otherwise spend the whole row on
+// vertical bars; past the cap, commits are drawn in the last column and the
+// topology is read from the detail pane instead.
+func (l *Log) maxLanes() int { return max(4, l.width/3) }
+
+// graphCell draws one row of the lane graph, padded to the widest row so the
+// hash column lines up down the page.
 func (l *Log) graphCell(i int) string {
 	if i >= len(l.graph) {
 		return ""
 	}
 	g := l.graph[i]
+	cells, lane := g.cells, g.lane
 
-	cells := g.cells
-	if len(cells) > maxLanes {
-		clipped := make([]rune, maxLanes)
+	if cap := l.maxLanes(); len(cells) > cap {
+		clipped, clane := make([]rune, cap), make([]int, cap)
 		copy(clipped, cells)
-		if g.col >= maxLanes {
+		copy(clane, lane)
+		if g.col >= cap {
 			// The node is past the cap: draw it in the last visible column so
 			// the row still shows a commit, whatever lane it really sits in.
-			clipped[maxLanes-1] = cells[g.col]
+			clipped[cap-1], clane[cap-1] = cells[g.col], lane[g.col]
 		}
-		cells = clipped
+		cells, lane = clipped, clane
 	}
 
-	// The node takes its author's colour, the same one as the tag beside the
-	// hash, so the graph itself shows who was committing where.
-	node := theme.Author(l.commits[i].Author)
-
 	var b strings.Builder
-	for _, r := range cells {
-		switch r {
-		case nodeMerge, nodeCommit:
-			b.WriteString(node.Render(string(r)))
-		case ' ':
+	for j, r := range cells {
+		if r == ' ' {
 			b.WriteByte(' ')
-		default:
-			b.WriteString(theme.Dim.Render(string(r)))
+			continue
 		}
+		b.WriteString(theme.Lane(lane[j]).Render(string(r)))
+	}
+	for j := len(cells); j < min(l.graphW, l.maxLanes()); j++ {
+		b.WriteByte(' ')
 	}
 	return b.String()
 }
@@ -249,35 +439,75 @@ func boxGlyph(up, down, left, right bool) rune {
 	return boxGlyphs[i]
 }
 
-// drawCells lays out one row: the node in its column, the lanes live above
-// (in) and below (out) it, and a horizontal run from the node to every lane
-// it connects to on this row. Everything the row shows is derived here, so
-// the renderer only has to colour glyphs.
-func drawCells(col int, merge bool, in, out []bool, targets []int) []rune {
-	lo, hi := col, col
-	for _, t := range targets {
-		if t < lo {
-			lo = t
+// drawCells lays out one row: the node in its column, the lanes live below it
+// (out), where each lane live above it continues (from), and a horizontal run
+// from the node to every lane it connects to on this row. Everything the row
+// shows is derived here, so the renderer only has to colour glyphs.
+//
+// The second result is the lane each cell is coloured as. A cell that carries
+// a line takes its own column; a horizontal run takes the lane it lands in, so
+// a merged branch is one colour from the merge node down to its fork, and a
+// lane sliding left is one colour from the bend to the column it lands in.
+func drawCells(col int, merge bool, from []int, out []bool, targets []int) (cells []rune, lane []int) {
+	n := len(out)
+	up, down, left, right := make([]bool, n), make([]bool, n), make([]bool, n), make([]bool, n)
+	lane = make([]int, n)
+	for j := range lane {
+		lane[j] = j
+		down[j] = out[j]
+	}
+	for j, k := range from {
+		if k < 0 {
+			continue
 		}
-		if t > hi {
-			hi = t
+		up[j] = true
+		if k < j {
+			left[j], right[k] = true, true
+			lane[j] = k
 		}
 	}
 
-	cells := make([]rune, len(out))
+	lo, hi := col, col
+	for _, t := range targets {
+		lo, hi = min(lo, t), max(hi, t)
+	}
+	for j := 0; j < n; j++ {
+		left[j] = left[j] || (j > lo && j <= hi)
+		right[j] = right[j] || (j >= lo && j < hi)
+	}
+
+	cells = make([]rune, n)
 	for j := range cells {
-		if j == col {
+		switch {
+		case j == col:
+			cells[j] = nodeCommit
 			if merge {
 				cells[j] = nodeMerge
-			} else {
-				cells[j] = nodeCommit
 			}
 			continue
+		case !up[j] && !down[j]:
+			// Only a run passes here: colour it as the lane it is heading to.
+			lane[j] = nearest(targets, j, j > col)
 		}
-		up := j < len(in) && in[j]
-		cells[j] = boxGlyph(up, out[j], j > lo && j <= hi, j >= lo && j < hi)
+		cells[j] = boxGlyph(up[j], down[j], left[j], right[j])
 	}
-	return cells
+	return cells, lane
+}
+
+// nearest is the target closest to column j on the far side of it from the
+// node: the first one at or past j when the run goes right, the last one at or
+// before j when it goes left.
+func nearest(targets []int, j int, rightward bool) int {
+	best := j
+	for _, t := range targets {
+		switch {
+		case rightward && t >= j && (best == j || t < best):
+			best = t
+		case !rightward && t <= j && (best == j || t > best):
+			best = t
+		}
+	}
+	return best
 }
 
 func live(lanes []string) []bool {
@@ -298,9 +528,14 @@ func live(lanes []string) []bool {
 // The whole loaded list is walked, never the visible window: which column a
 // commit sits in depends on every commit above it, so seeding from the top of
 // the screen would shift the lanes as the user scrolls.
+//
+// When a lane ends, the lanes to its right slide left to close the gap — one
+// column per row, so the slide is drawn as a single ╭╯ bend and never crosses
+// another. New lanes are only ever appended: reusing a hole on the row a
+// neighbour slides into it would put a lane under the bend and draw a join.
 func buildGraph(commits []git.Commit) []graphRow {
 	// lanes[i] is the SHA lane i is waiting to draw; "" is a lane that has
-	// ended and is free for reuse.
+	// ended and not yet been closed up.
 	var lanes []string
 	// drawn is every commit already given a row. A lane whose next commit is
 	// in here has nowhere left to go downward.
@@ -308,16 +543,16 @@ func buildGraph(commits []git.Commit) []graphRow {
 	rows := make([]graphRow, len(commits))
 
 	for i, c := range commits {
+		// from is where each lane live above this row continues below it —
+		// the slide, if any, is drawn on this row.
+		var from []int
+		lanes, from = compact(lanes)
+
 		col := laneOf(lanes, c.SHA)
 		if col < 0 {
-			col = freeLane(&lanes)
-			lanes[col] = c.SHA
+			lanes = append(lanes, c.SHA)
+			col = len(lanes) - 1
 		}
-
-		// Snapshot before reassigning: the lanes live on the way into this
-		// row are what is drawn above the node, and the state on the way out
-		// is what is drawn below it.
-		in := live(lanes)
 		drawn[c.SHA] = true
 
 		// targets are the lanes this node connects to sideways on its own
@@ -355,15 +590,39 @@ func buildGraph(commits []git.Commit) []graphRow {
 			}
 			k := laneOf(lanes, p)
 			if k < 0 {
-				k = freeLane(&lanes)
-				lanes[k] = p
+				lanes = append(lanes, p)
+				k = len(lanes) - 1
 			}
 			targets = append(targets, k)
 		}
 
-		rows[i] = graphRow{col: col, cells: drawCells(col, c.IsMerge(), in, live(lanes), targets)}
+		cells, lane := drawCells(col, c.IsMerge(), from, live(lanes), targets)
+		rows[i] = graphRow{col: col, cells: cells, lane: lane}
 	}
 	return rows
+}
+
+// compact drops the holes past the last live lane and slides every lane with a
+// hole directly to its left one column into it. from[j] is the column lane j
+// continues in, -1 for a hole. One step per row: a lane two holes from home
+// takes two rows to get there, which keeps every bend a plain ╭╯.
+func compact(lanes []string) (out []string, from []int) {
+	for len(lanes) > 0 && lanes[len(lanes)-1] == "" {
+		lanes = lanes[:len(lanes)-1]
+	}
+	out, from = make([]string, len(lanes)), make([]int, len(lanes))
+	for j, s := range lanes {
+		from[j] = -1
+		if s == "" {
+			continue
+		}
+		k := j
+		if j > 0 && lanes[j-1] == "" {
+			k = j - 1
+		}
+		out[k], from[j] = s, k
+	}
+	return out, from
 }
 
 func laneOf(lanes []string, sha string) int {
@@ -378,13 +637,84 @@ func laneOf(lanes []string, sha string) int {
 	return -1
 }
 
-// freeLane returns the leftmost ended lane, appending one when all are busy.
-func freeLane(lanes *[]string) int {
-	for i, s := range *lanes {
-		if s == "" {
-			return i
-		}
+// refKind is what a decoration names: a local branch, a remote-tracking ref,
+// or a tag.
+type refKind int
+
+const (
+	refLocal refKind = iota
+	refRemote
+	refTag
+)
+
+type ref struct {
+	name string
+	kind refKind
+	// head marks the ref HEAD is on, or a detached HEAD itself.
+	head bool
+}
+
+// parseRefs splits git's %D decoration — "HEAD -> main, origin/main, tag: v1"
+// — into one entry per ref. The separator is safe: a ref name cannot contain
+// a space.
+//
+// ponytail: a ref containing "/" is taken for a remote, so a local branch
+// named feature/x is coloured as one. Feed `git remote` names in if it bites.
+func parseRefs(s string) []ref {
+	if s == "" {
+		return nil
 	}
-	*lanes = append(*lanes, "")
-	return len(*lanes) - 1
+	var out []ref
+	for _, part := range strings.Split(s, ", ") {
+		r := ref{name: part}
+		switch {
+		case part == "HEAD":
+			r.head = true
+		case strings.HasPrefix(part, "HEAD -> "):
+			r.name, r.head = strings.TrimPrefix(part, "HEAD -> "), true
+		case strings.HasPrefix(part, "tag: "):
+			r.name, r.kind = strings.TrimPrefix(part, "tag: "), refTag
+		}
+		if r.kind == refLocal && strings.Contains(r.name, "/") {
+			r.kind = refRemote
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// maxPills is how many refs a row shows before folding the rest into a count.
+// Two covers the common "main, origin/main" pair; a release commit with five
+// tags would otherwise push its subject off the pane.
+const maxPills = 2
+
+// refPills renders the refs on a commit as coloured pills, each followed by a
+// space, so the caller can append the subject directly. Empty when the commit
+// has none.
+func refPills(s string) string {
+	refs := parseRefs(s)
+	var b strings.Builder
+	for i, r := range refs {
+		if i == maxPills {
+			b.WriteString(theme.Dim.Render("+"+strconv.Itoa(len(refs)-maxPills)) + " ")
+			break
+		}
+		name := r.name
+		if r.head {
+			// A marker rather than bold: bold is invisible on a filled block.
+			name = "★ " + name
+		}
+		b.WriteString(pillStyle(r.kind).Render(name) + " ")
+	}
+	return b.String()
+}
+
+func pillStyle(k refKind) lipgloss.Style {
+	switch k {
+	case refRemote:
+		return theme.Remote
+	case refTag:
+		return theme.Tag
+	}
+	return theme.Branch
 }

@@ -28,6 +28,8 @@ func (m Model) footer() string {
 		return theme.Cursor.Render("any key") + " " + theme.Dim.Render("close help")
 	case m.commit.Active():
 		hints = []keys.Binding{{Keys: k.Confirm, Desc: "commit"}, {Keys: k.Cancel, Desc: "cancel"}}
+	case m.logPrompt:
+		hints = []keys.Binding{{Keys: []string{"enter"}, Desc: "jump"}, {Keys: k.Cancel, Desc: "close"}}
 	default:
 		hints = append(m.viewHints(),
 			keys.Binding{Keys: k.NextPane, Desc: "pane"},
@@ -76,12 +78,24 @@ func (m Model) viewHints() []keys.Binding {
 		if m.logRef != "" {
 			return []keys.Binding{{Keys: k.Cancel, Desc: "back to branches"}}
 		}
-		return nil
+		if m.focus != focusList {
+			return nil
+		}
+		scope := "HEAD only"
+		if !m.logAll {
+			scope = "all refs"
+		}
+		return []keys.Binding{
+			{Keys: k.Search, Desc: "search"},
+			{Keys: k.Parent, Desc: "parent"},
+			{Keys: k.Child, Desc: "child"},
+			{Keys: k.LogAll, Desc: scope},
+		}
 	case viewBranches:
 		if m.focus != focusList {
 			return nil
 		}
-		return []keys.Binding{{Keys: k.Branch, Desc: "checkout"}, {Keys: k.BranchLog, Desc: "log branch"}}
+		return []keys.Binding{{Keys: k.Branch, Desc: "checkout"}, {Keys: k.BranchLog, Desc: "log branch"}, {Keys: k.BranchJump, Desc: "tip in log"}}
 	case viewStash:
 		if m.focus != focusList {
 			return nil

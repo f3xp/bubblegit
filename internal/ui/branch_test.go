@@ -141,7 +141,9 @@ func TestStagingKeysAreInertInBranchView(t *testing.T) {
 
 	h.enterBranches()
 	staged := h.m.showStaged
-	for _, k := range []string{" ", "a", "t", "c", "C"} {
+	// Not space: in this view it is the jump into the log, and it is
+	// covered by TestBranchJumpLandsOnTip.
+	for _, k := range []string{"a", "t", "c", "C"} {
 		t.Run(fmt.Sprintf("key %q", k), func(t *testing.T) {
 			h.maybeRun(h.key(k))
 			if h.m.commit.Active() {
@@ -386,22 +388,22 @@ func TestBranchLogScopesTheLogView(t *testing.T) {
 	if h.m.log.Len() != 4 {
 		t.Fatalf("back on HEAD the log holds %d commits, want the fixture's 4", h.m.log.Len())
 	}
-	if title := h.m.listTitle().String(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log — all (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 }
 
-// TestBranchLogOnCurrentBranchStaysUnscoped keeps the title honest the other
-// way: the branch you are on walks the same history HEAD does, so naming it
-// would add a scope that is not one.
-func TestBranchLogOnCurrentBranchStaysUnscoped(t *testing.T) {
+// TestBranchLogOnCurrentBranchIsScopedToo: an unscoped log walks every ref,
+// so the branch you are on is a narrower history than the default and its
+// name is a scope like any other's.
+func TestBranchLogOnCurrentBranchIsScopedToo(t *testing.T) {
 	h := newHarness(t)
 	h.enterBranches()
 	h.selectBranch("main")
 	h.run(h.enter())
 
-	if title := h.m.listTitle().String(); title != "Log (4)" {
-		t.Errorf("the log pane is titled %q, want the unscoped title", title)
+	if title := h.m.listTitle().String(); title != "Log — main (4)" {
+		t.Errorf("the log pane is titled %q, want it scoped to main", title)
 	}
 }
 
@@ -430,7 +432,7 @@ func TestBranchLogRecoversFromAMissingRef(t *testing.T) {
 	if h.m.log.Len() != 4 {
 		t.Fatalf("the log key did not recover: it holds %d commits, want the fixture's 4", h.m.log.Len())
 	}
-	if title := h.m.listTitle().String(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log — all (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 }
@@ -458,7 +460,7 @@ func TestBranchLogEscapeReturnsToBranches(t *testing.T) {
 	// round — two view changes before the log key sees the scope at all.
 	h.maybeRun(h.key("1"))
 	h.run(h.key("2"))
-	if title := h.m.listTitle().String(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log — all (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 

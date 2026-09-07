@@ -60,6 +60,15 @@ var ops = []struct {
 		},
 	},
 	{
+		// The seed of an all-refs log: one rev-list over every ref, so the
+		// walk can resume from tips the first page never reached.
+		name: "Tips",
+		run: func(ctx context.Context, r *git.Runner) (int, error) {
+			t, err := git.Tips(ctx, r)
+			return len(t), err
+		},
+	},
+	{
 		name: "CommitDetail",
 		run: func(ctx context.Context, r *git.Runner) (int, error) {
 			d, err := git.Show(ctx, r, "HEAD")
