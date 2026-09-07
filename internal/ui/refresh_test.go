@@ -104,20 +104,35 @@ func TestStatusRepointsWatcher(t *testing.T) {
 
 // filePaths reads the whole list by walking the cursor over it, and puts the
 // cursor back: the pane exposes a selection, not a slice.
+// selectFileFromTop puts the cursor back on path, searching from the top.
+func (h *harness) selectFileFromTop(path string) {
+	h.m.files.Top()
+	for h.m.SelectedPath() != path {
+		before := h.m.SelectedPath()
+		h.m.files.MoveBy(1)
+		if h.m.SelectedPath() == before {
+			return
+		}
+	}
+}
+
 func (h *harness) filePaths() []string {
 	h.t.Helper()
 	before := h.m.SelectedPath()
 	var paths []string
-	for i := range h.m.files.Len() {
-		h.m.files.MoveTo(i)
+	// Walk the rows rather than index the files: the pane's cursor counts
+	// section headings, and it stops moving at the last file. No two
+	// neighbouring rows share a path, so a repeat means the bottom.
+	h.m.files.Top()
+	for {
 		f, _ := h.m.files.Selected()
-		paths = append(paths, f.Path)
-	}
-	for i, p := range paths {
-		if p == before {
-			h.m.files.MoveTo(i)
+		if n := len(paths); n > 0 && paths[n-1] == f.Path {
+			break
 		}
+		paths = append(paths, f.Path)
+		h.m.files.MoveBy(1)
 	}
+	h.selectFileFromTop(before)
 	return paths
 }
 

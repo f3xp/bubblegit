@@ -26,6 +26,25 @@ type Map struct {
 	Stage     []string
 	StageHunk []string
 
+	// The whole-tree writes. StageAll and UnstageAll are the two halves of
+	// the index; Discard throws away every unstaged change to a tracked file
+	// and Clean deletes every untracked one — the two are kept apart because
+	// they lose different things, and each asks before it does.
+	StageAll   []string
+	UnstageAll []string
+	Discard    []string
+	Clean      []string
+
+	// Stash puts every change, untracked files included, on the stash;
+	// StashTracked leaves the untracked files where they are. StashPop takes
+	// the newest stash back in the status view, and the one under the cursor
+	// in the stash view, where StashApply and StashDrop join it.
+	Stash        []string
+	StashTracked []string
+	StashPop     []string
+	StashApply   []string
+	StashDrop    []string
+
 	// Commit opens the message editor; Amend opens it pre-filled with HEAD's
 	// message. Two keys rather than a toggle inside the editor: the editor is
 	// already a mode, and a mode inside a mode is one too many.
@@ -66,6 +85,7 @@ type Map struct {
 	StatusView []string
 	LogView    []string
 	BranchView []string
+	StashView  []string
 
 	// Refresh re-reads the view on screen now rather than at the next tick.
 	Refresh []string
@@ -94,6 +114,19 @@ func Default() Map {
 		Stage:     []string{"space"},
 		StageHunk: []string{"a"},
 
+		StageAll:   []string{"A"},
+		UnstageAll: []string{"U"},
+		Discard:    []string{"D"},
+		Clean:      []string{"X"},
+
+		Stash:        []string{"s"},
+		StashTracked: []string{"S"},
+		StashPop:     []string{"p"},
+		// "a" again: the stash view has no hunks, so the key is free there,
+		// and apply is the stash's stage.
+		StashApply: []string{"a"},
+		StashDrop:  []string{"d"},
+
 		Commit: []string{"c"},
 		Amend:  []string{"C"},
 		Branch: []string{"b"},
@@ -111,6 +144,7 @@ func Default() Map {
 		StatusView: []string{"1"},
 		LogView:    []string{"2"},
 		BranchView: []string{"3"},
+		StashView:  []string{"4"},
 
 		Refresh: []string{"R"},
 		Help:    []string{"?"},
@@ -143,13 +177,16 @@ type Binding struct {
 // identifiers, not descriptions, so the text has to be written out either way
 // — and keeping it in this file means a new binding and its description land
 // in the same diff.
+//
+// The descriptions are terse on purpose. Three columns of them have to fit an
+// 80-column terminal, and the README carries the sentence each one stands for.
 func (m Map) Bindings() [][]Binding {
 	return [][]Binding{
 		{
 			{m.Up, "up"},
 			{m.Down, "down"},
-			{m.Left, "left / collapse"},
-			{m.Right, "right / expand"},
+			{m.Left, "split ←"},
+			{m.Right, "split →"},
 			{m.Top, "top"},
 			{m.Bottom, "bottom"},
 			{m.PageUp, "page up"},
@@ -157,28 +194,42 @@ func (m Map) Bindings() [][]Binding {
 		},
 		{
 			{m.NextPane, "next pane"},
-			{m.PrevPane, "previous pane"},
+			{m.PrevPane, "prev pane"},
 		},
 		{
-			{m.Stage, "stage / unstage"},
-			{m.StageHunk, "stage / unstage hunk"},
-			{m.ToggleStaged, "toggle staged diff"},
+			{m.Stage, "stage"},
+			{m.StageHunk, "stage hunk"},
+			{m.ToggleStaged, "staged side"},
+		},
+		{
+			{m.StageAll, "stage all"},
+			{m.UnstageAll, "unstage all"},
+			{m.Discard, "discard changes"},
+			{m.Clean, "delete untracked"},
+		},
+		{
+			{m.Stash, "stash all"},
+			{m.StashTracked, "stash tracked"},
+			{m.StashPop, "pop stash"},
+			{m.StashApply, "apply stash"},
+			{m.StashDrop, "drop stash"},
 		},
 		{
 			{m.Commit, "commit"},
 			{m.Amend, "amend HEAD"},
-			{m.Confirm, "confirm (in editor)"},
-			{m.Cancel, "cancel (in editor)"},
+			{m.Confirm, "confirm (editor)"},
+			{m.Cancel, "cancel (editor)"},
 		},
 		{
 			{m.Branch, "checkout branch"},
 			{m.BranchLog, "log this branch"},
-			{m.Cancel, "back to branches (from a branch log)"},
+			{m.Cancel, "branch list"},
 		},
 		{
 			{m.StatusView, "status view"},
 			{m.LogView, "log view"},
 			{m.BranchView, "branch view"},
+			{m.StashView, "stash view"},
 		},
 		{
 			{m.Refresh, "refresh"},

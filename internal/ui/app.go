@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -47,6 +48,7 @@ var splitDefaults = [...]float64{
 	viewStatus:   0.66,
 	viewLog:      0.5,
 	viewBranches: 0.5,
+	viewStash:    0.5,
 }
 
 var errEmptyMessage = errors.New("empty commit message")
@@ -75,6 +77,7 @@ const (
 	viewStatus view = iota
 	viewLog
 	viewBranches
+	viewStash
 )
 
 // tickMsg is the periodic refresh firing. Its handler is the one place the
@@ -91,13 +94,16 @@ type headMsg struct {
 }
 
 type statusMsg struct {
+	// stats is the per-path line count of every uncommitted change, for the
+	// file rows and, summed, the files pane title.
+	stats map[string]git.LineStat
 	files []git.FileStatus
 	err   error
 }
 
-// stagedMsg reports that a stage or un-stage finished. It carries no payload:
-// the index moved, so every derived view has to be re-read from git rather
-// than patched locally.
+// stagedMsg reports that a write to the index, the working tree or the stash
+// finished. It carries no payload: something moved, so every derived view has
+// to be re-read from git rather than patched locally.
 type stagedMsg struct{ err error }
 
 // commitMsg reports that a commit or amend finished. Like stagedMsg it carries
@@ -150,6 +156,11 @@ type branchesMsg struct {
 	err      error
 }
 
+type stashesMsg struct {
+	stashes []git.Stash
+	err     error
+}
+
 // detailMsg carries one commit's patch, rendered and generation-tagged for the
 // same reasons diffMsg is — and a commit carries every changed file's patch, so
 // there is more of it to render.
@@ -172,12 +183,15 @@ type Model struct {
 	head git.Head
 	err  error
 
-	files    pane.Files
-	diff     pane.Diff
-	commit   pane.Commit
-	log      pane.Log
-	detail   pane.Detail
-	branches pane.Branches
+	files pane.Files
+	// added and deleted are the line totals behind the files pane title.
+	added, deleted int
+	diff           pane.Diff
+	commit         pane.Commit
+	log            pane.Log
+	detail         pane.Detail
+	branches       pane.Branches
+	stashes        pane.Stashes
 
 	focus focus
 	view  view
@@ -227,6 +241,11 @@ type Model struct {
 	// the list on screen describes a branch that has moved on.
 	branchesLoaded bool
 
+	// stashesLoaded is the same flag for the stash list, cleared by every
+	// write: a stash op is the obvious one, but a stage or a discard changes
+	// what the next stash would hold too.
+	stashesLoaded bool
+
 	// splits is the fraction of the terminal the left pane gets, per view,
 	// seeded from splitDefaults and moved by the splitter. Per view because
 	// the three pairs of panes want different proportions of the same
@@ -271,7 +290,24 @@ type Model struct {
 	// the editor is a mode — while it is up it owns the keyboard — but a
 	// read-only one, so any key dismisses it rather than only an escape.
 	showHelp bool
+
+	// confirm is the question a destructive key has asked and not yet had
+	// answered. While it is set the key bar shows the question and the next
+	// key is the answer: y goes ahead, anything else is no.
+	confirm confirm
 }
+
+// confirm is a pending yes/no. do runs on yes; a nil do is no question.
+//
+// A line in the key bar rather than a dialog: the bar is where the eye already
+// goes to find out what a key does, and a question there is one more row of
+// keys with two answers.
+type confirm struct {
+	prompt string
+	do     func(*Model) tea.Cmd
+}
+
+func (c confirm) pending() bool { return c.do != nil }
 
 func New(root string) Model {
 	// A failed watcher is not fatal: the periodic refresh still runs, only
@@ -320,7 +356,7 @@ func (m *Model) refresh() tea.Cmd {
 		return nil
 	}
 	// The visible view's arrival handler sets its own flag back.
-	m.logLoaded, m.branchesLoaded = false, false
+	m.logLoaded, m.branchesLoaded, m.stashesLoaded = false, false, false
 	cmds := []tea.Cmd{m.loadHead()}
 	switch m.view {
 	case viewStatus:
@@ -329,6 +365,8 @@ func (m *Model) refresh() tea.Cmd {
 		cmds = append(cmds, m.loadLog())
 	case viewBranches:
 		cmds = append(cmds, m.loadBranches())
+	case viewStash:
+		cmds = append(cmds, m.loadStashes())
 	}
 	return tea.Batch(cmds...)
 }
@@ -364,7 +402,14 @@ func (m Model) loadStatus() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		files, err := git.Status(ctx, repo)
-		return statusMsg{files: files, err: err}
+		if err != nil {
+			return statusMsg{err: err}
+		}
+		// A second process per status read. The status pane is the only one
+		// that shows the counts, and reading them alongside the list keeps
+		// the two from disagreeing on screen.
+		stats, err := git.Numstat(ctx, repo)
+		return statusMsg{files: files, stats: stats, err: err}
 	}
 }
 
@@ -454,6 +499,30 @@ func (m *Model) loadBranches() tea.Cmd {
 	}
 }
 
+// loadStashes reads the whole stash list.
+func (m *Model) loadStashes() tea.Cmd {
+	repo := m.repo
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+		defer cancel()
+		s, err := git.Stashes(ctx, repo)
+		return stashesMsg{stashes: s, err: err}
+	}
+}
+
+// loadStashTip requests the patch for the selected stash. A stash is a commit
+// whose first parent is the HEAD it was taken on, so git.Show renders it as
+// the change it holds; the untracked files of a `-u` stash sit on a third
+// parent and are not part of that patch.
+func (m *Model) loadStashTip() tea.Cmd {
+	st, ok := m.stashes.Selected()
+	if !ok {
+		m.detail.SetEmpty("no stashes")
+		return nil
+	}
+	return m.loadDetailFor(st.SHA)
+}
+
 // loadDetail requests the patch for the commit under the log cursor.
 func (m *Model) loadDetail() tea.Cmd {
 	c, ok := m.log.Selected()
@@ -540,6 +609,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.watch.Set(m.watchPaths(msg.files))
 		}
 		m.files.SetFiles(msg.files)
+		m.files.SetStats(msg.stats)
+		m.added, m.deleted = git.Total(msg.stats)
 		return m, m.loadDiff()
 
 	case stagedMsg:
@@ -548,8 +619,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// index.lock contention and a patch that will not apply both land
 			// here, and both are things the user has to see: silently doing
 			// nothing on a stage key is indistinguishable from a broken key.
-			m.diff.SetError(msg.err)
+			m.docError(msg.err)
 			return m, nil
+		}
+		// A stash op changes both lists; the status one is re-read now and
+		// the stash one when its view is next on screen.
+		m.stashesLoaded = false
+		if m.view == viewStash {
+			return m, tea.Batch(m.loadStatus(), m.loadStashes())
 		}
 		return m, m.loadStatus()
 
@@ -653,6 +730,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadBranchTip()
 
+	case stashesMsg:
+		if msg.err != nil {
+			m.detail.SetError(msg.err)
+			return m, nil
+		}
+		m.stashesLoaded = true
+		m.stashes.SetStashes(msg.stashes)
+		if m.view != viewStash {
+			return m, nil
+		}
+		return m, m.loadStashTip()
+
 	case detailMsg:
 		if msg.gen != m.detailGen {
 			return m, nil
@@ -703,6 +792,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A pending question takes the next key as its answer, whatever the key.
+	// Swallowing a no rather than acting on it keeps `j` from moving a cursor
+	// the user was looking at the question over. ctrl+c stays quit, as it does
+	// under the popup and in the editor.
+	if m.confirm.pending() {
+		do := m.confirm.do
+		m.confirm = confirm{}
+		switch k {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "y", "Y":
+			return m, do(&m)
+		}
+		return m, nil
+	}
+
 	// The message editor is a mode, and while it is open it owns every key:
 	// `q` types a q, `space` types a space, `t` types a t. This is the one
 	// place the flat key dispatch has to branch before it reaches the
@@ -740,6 +845,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case keys.Matches(m.keys.BranchView, k):
 		return m.setView(viewBranches)
+
+	case keys.Matches(m.keys.StashView, k):
+		return m.setView(viewStash)
 
 	// Works in every view: it re-reads whichever list is on screen.
 	case keys.Matches(m.keys.Refresh, k):
@@ -819,6 +927,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleLogKey(k)
 	case viewBranches:
 		return m.handleBranchKey(k)
+	case viewStash:
+		return m.handleStashKey(k)
 	}
 	if m.focus == focusDoc {
 		return m.handleDiffKey(k)
@@ -856,6 +966,11 @@ func (m Model) setView(v view) (tea.Model, tea.Cmd) {
 			return m, m.loadBranches()
 		}
 		return m, m.loadBranchTip()
+	case viewStash:
+		if !m.stashesLoaded {
+			return m, m.loadStashes()
+		}
+		return m, m.loadStashTip()
 	}
 	return m, nil
 }
@@ -1002,6 +1117,55 @@ func (m Model) handleBranchKey(k string) (tea.Model, tea.Cmd) {
 	return m, m.afterBranchMove(before)
 }
 
+// handleStashKey routes the stash view. Pop and apply put a stash back on the
+// working tree; only drop loses it, so only drop asks.
+func (m Model) handleStashKey(k string) (tea.Model, tea.Cmd) {
+	if m.focus == focusDoc {
+		return m.handleDetailKey(k)
+	}
+
+	before := m.stashes.SelectedSHA()
+	switch {
+	case keys.Matches(m.keys.StashPop, k), keys.Matches(m.keys.StashApply, k), keys.Matches(m.keys.StashDrop, k):
+		st, ok := m.stashes.Selected()
+		if !ok {
+			return m, nil
+		}
+		ref := st.Ref
+		switch {
+		case keys.Matches(m.keys.StashPop, k):
+			return m, m.write(func(ctx context.Context, r *git.Runner) error { return git.StashPop(ctx, r, ref) })
+		case keys.Matches(m.keys.StashApply, k):
+			return m, m.write(func(ctx context.Context, r *git.Runner) error { return git.StashApply(ctx, r, ref) })
+		}
+		m.ask("Drop "+ref+"?", func(ctx context.Context, r *git.Runner) error { return git.StashDrop(ctx, r, ref) })
+		return m, nil
+	case keys.Matches(m.keys.Down, k):
+		m.stashes.MoveBy(1)
+	case keys.Matches(m.keys.Up, k):
+		m.stashes.MoveBy(-1)
+	case keys.Matches(m.keys.Bottom, k):
+		m.stashes.Bottom()
+	case keys.Matches(m.keys.Top, k):
+		m.stashes.Top()
+	case keys.Matches(m.keys.PageDown, k):
+		m.stashes.HalfPageDown()
+	case keys.Matches(m.keys.PageUp, k):
+		m.stashes.HalfPageUp()
+	default:
+		return m, nil
+	}
+	return m, m.afterStashMove(before)
+}
+
+// afterStashMove issues the re-read a moved stash cursor implies.
+func (m *Model) afterStashMove(before string) tea.Cmd {
+	if m.stashes.SelectedSHA() == before {
+		return nil
+	}
+	return m.loadStashTip()
+}
+
 // afterBranchMove issues the tip re-read a moved branch cursor implies. Shared
 // with the mouse path, for the same reason afterLogMove is.
 func (m *Model) afterBranchMove(before string) tea.Cmd {
@@ -1105,13 +1269,39 @@ func (m Model) handleFilesKey(k string) (tea.Model, tea.Cmd) {
 	case keys.Matches(m.keys.Top, k):
 		m.files.Top()
 	case keys.Matches(m.keys.PageDown, k):
-		m.files.MoveBy(m.files.Len() / 2)
+		m.files.HalfPageDown()
 	case keys.Matches(m.keys.PageUp, k):
-		m.files.MoveBy(-m.files.Len() / 2)
+		m.files.HalfPageUp()
 	case keys.Matches(m.keys.Stage, k), keys.Matches(m.keys.StageHunk, k):
 		// In the file list both keys mean the whole file: there is no hunk to
 		// single out from here.
 		return m, m.stageFile()
+
+	case keys.Matches(m.keys.StageAll, k):
+		return m, m.write(git.StageAll)
+	case keys.Matches(m.keys.UnstageAll, k):
+		return m, m.write(git.UnstageAll)
+	case keys.Matches(m.keys.Discard, k):
+		m.ask("Discard every unstaged change to tracked files?", git.DiscardWorktree)
+		return m, nil
+	case keys.Matches(m.keys.Clean, k):
+		n := 0
+		for i := range m.files.Len() {
+			if m.files.At(i).IsUntracked() {
+				n++
+			}
+		}
+		if n == 0 {
+			return m, nil
+		}
+		m.ask("Delete "+strconv.Itoa(n)+" untracked file(s)?", git.CleanUntracked)
+		return m, nil
+	case keys.Matches(m.keys.Stash, k):
+		return m, m.write(func(ctx context.Context, r *git.Runner) error { return git.StashPush(ctx, r, true) })
+	case keys.Matches(m.keys.StashTracked, k):
+		return m, m.write(func(ctx context.Context, r *git.Runner) error { return git.StashPush(ctx, r, false) })
+	case keys.Matches(m.keys.StashPop, k):
+		return m, m.write(func(ctx context.Context, r *git.Runner) error { return git.StashPop(ctx, r, "") })
 	default:
 		return m, nil
 	}
@@ -1196,20 +1386,49 @@ func (m *Model) stageSelection(wholeHunk bool) tea.Cmd {
 // stageFile stages or un-stages the selected path outright.
 func (m *Model) stageFile() tea.Cmd {
 	sel, ok := m.files.Selected()
-	if !ok || m.applying {
+	if !ok {
 		return nil
 	}
+	path := sel.Path
+	if m.stagedSide() {
+		return m.write(func(ctx context.Context, r *git.Runner) error { return git.UnstageFile(ctx, r, path) })
+	}
+	return m.write(func(ctx context.Context, r *git.Runner) error { return git.StageFile(ctx, r, path) })
+}
 
+// write runs one git write behind the applying flag and reports it as a
+// stagedMsg. Every whole-tree and stash key goes through here, so the guard,
+// the timeout and the message live in one place.
+func (m *Model) write(fn func(context.Context, *git.Runner) error) tea.Cmd {
+	if m.applying {
+		return nil
+	}
 	m.applying = true
-	repo, path, reverse := m.repo, sel.Path, m.stagedSide()
+	repo := m.repo
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
-		if reverse {
-			return stagedMsg{err: git.UnstageFile(ctx, repo, path)}
-		}
-		return stagedMsg{err: git.StageFile(ctx, repo, path)}
+		return stagedMsg{err: fn(ctx, repo)}
 	}
+}
+
+// ask parks a write behind a yes/no in the key bar.
+func (m *Model) ask(prompt string, fn func(context.Context, *git.Runner) error) {
+	if m.applying {
+		return
+	}
+	m.confirm = confirm{prompt: prompt, do: func(m *Model) tea.Cmd { return m.write(fn) }}
+}
+
+// docError shows a failed write in whichever document pane is on screen: the
+// diff in the status view, the commit everywhere else. An error nobody can
+// see is a key that silently does nothing.
+func (m *Model) docError(err error) {
+	if m.view == viewStatus {
+		m.diff.SetError(err)
+		return
+	}
+	m.detail.SetError(err)
 }
 
 // wholeFileOnly reports whether a change can only be staged in one piece.
@@ -1270,7 +1489,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// so while it is open there is nothing under the pointer to click. It owns
 	// the mouse for the same reason it owns every key. The help popup covers
 	// the middle of the frame, including the splitter, so it does the same.
-	if m.commit.Active() || m.showHelp {
+	if m.commit.Active() || m.showHelp || m.confirm.pending() {
 		return m, nil
 	}
 
@@ -1363,6 +1582,10 @@ func (m Model) mouseMove(p focus, n int, abs bool) (tea.Model, tea.Cmd) {
 		before := m.branches.SelectedName()
 		move(&m.branches)
 		return m, m.afterBranchMove(before)
+	case viewStash:
+		before := m.stashes.SelectedSHA()
+		move(&m.stashes)
+		return m, m.afterStashMove(before)
 	}
 	sel, _ := m.files.Selected()
 	move(&m.files)
@@ -1380,7 +1603,7 @@ type mouseHit struct {
 }
 
 // hitTest maps a terminal cell to the pane under it. ok is false for the app
-// header and for anything outside the frame.
+// header, the key bar and for anything outside the frame.
 //
 // This is layout() read backwards, and the two have to agree: framed() draws a
 // pane as a border row, a title row, contentH() body rows and a closing border
@@ -1390,7 +1613,7 @@ type mouseHit struct {
 // too short for one, a single full-width pane when there is no room for two —
 // which is why it is pinned by a table test rather than trusted.
 func (m Model) hitTest(x, y int) (mouseHit, bool) {
-	if !m.ready || x < 0 || x >= m.width || y < headerH || y >= m.height {
+	if !m.ready || x < 0 || x >= m.width || y < headerH || y >= m.height-footerH {
 		return mouseHit{}, false
 	}
 
@@ -1425,7 +1648,7 @@ func (m Model) hitTest(x, y int) (mouseHit, bool) {
 		if x == 0 || x == paneW-1 {
 			return hit, true
 		}
-		top += 2 // the top border and the title
+		top += chromeH - 1 // the top border, the title and the rule under it
 	}
 	if y < top || y >= top+m.contentH() {
 		return hit, true
@@ -1437,21 +1660,24 @@ func (m Model) hitTest(x, y int) (mouseHit, bool) {
 // minPaneWidth keeps both panes legible rather than letting one collapse.
 const minPaneWidth = 24
 
-// Pane chrome: a border row above and below, plus a title row.
+// Pane chrome: a border row above and below, plus a title row. headerH and
+// footerH are the app's own rows around the panes: the repository line above,
+// the key bar below.
 const (
-	chromeH = 3
+	chromeH = 4 // top border, title, rule, bottom border
 	chromeW = 2
 	headerH = 1
+	footerH = 1
 )
 
 // layout splits the terminal between the panes.
 //
 // Every clamp here has to agree with framed(), or the rendered frame comes
 // out larger than the terminal and the display tears on resize. The rule is
-// that filesW+diffW is exactly m.width, and header plus pane is exactly
-// m.height.
+// that filesW+diffW is exactly m.width, and header plus pane plus footer is
+// exactly m.height.
 func (m *Model) layout() {
-	m.bodyH = m.height - headerH
+	m.bodyH = m.height - headerH - footerH
 	if m.bodyH < 1 {
 		m.bodyH = 1
 	}
@@ -1480,6 +1706,7 @@ func (m *Model) layout() {
 	m.files.SetSize(m.contentW(m.rightW), m.contentH())
 	m.log.SetSize(m.contentW(m.rightW), m.contentH())
 	m.branches.SetSize(m.contentW(m.rightW), m.contentH())
+	m.stashes.SetSize(m.contentW(m.rightW), m.contentH())
 	m.diff.SetSize(m.contentW(m.leftW), m.contentH())
 	m.detail.SetSize(m.contentW(m.leftW), m.contentH())
 	// The editor replaces both panes rather than sitting beside them, so it is
@@ -1585,7 +1812,7 @@ func (m Model) body() string {
 	var panes string
 	switch {
 	case m.commit.Active():
-		panes = m.framed(m.commit.Title(), m.commit.View(), m.width, true)
+		panes = m.framed(title{name: m.commit.Title()}, m.commit.View(), m.width, true)
 	case m.narrow:
 		// One pane at a time; tab swaps which one is visible.
 		if m.focus == focusDoc {
@@ -1603,6 +1830,7 @@ func (m Model) body() string {
 	frame := lipgloss.JoinVertical(lipgloss.Left,
 		ansi.Truncate(m.header(), m.width, ""),
 		panes,
+		m.footer(),
 	)
 	// Last line of defence: never hand the terminal more rows than it has.
 	base := lipgloss.NewStyle().MaxHeight(m.height).MaxWidth(m.width).Render(frame)
@@ -1632,23 +1860,70 @@ func (m Model) withHelp(base string) string {
 	).Render()
 }
 
+// title is a pane heading in three weights: the pane's name, what it is
+// showing, and a count or a side. Which weight each part gets is framed()'s
+// business — a focused pane reads name bold and count dim, an unfocused pane
+// is dim throughout — so the parts stay apart until then.
+type title struct {
+	name    string // "Files", "Log", "Diff"
+	subject string // a path, a ref, a sha
+	meta    string // "(10)", "(worktree)", "+8 −10"; may already carry colour
+}
+
+// String is the heading as plain text, which is what tests compare and what
+// an unfocused pane dims as a whole.
+func (t title) String() string {
+	s := t.name
+	if t.subject != "" {
+		s += " — " + t.subject
+	}
+	if t.meta != "" {
+		s += " " + ansi.Strip(t.meta)
+	}
+	return s
+}
+
+func (t title) render(focused bool) string {
+	if !focused {
+		return theme.TitleDim.Render(t.String())
+	}
+	s := theme.Title.Render(t.name)
+	if t.subject != "" {
+		s += theme.TitleDim.Render(" — ") + theme.Context.Render(t.subject)
+	}
+	if t.meta != "" {
+		s += " " + t.meta
+	}
+	return s
+}
+
+// count is the dim "(n)" a list title ends in.
+func count(n int, more string) string {
+	return theme.TitleDim.Render("(" + strconv.Itoa(n) + more + ")")
+}
+
 // listTitle and docTitle name whichever pane the current view puts in each
 // role, so body() does not have to know which view it is drawing.
-func (m Model) listTitle() string {
-	if m.view == viewBranches {
-		if n := m.branches.Len(); n > 0 {
-			return "Branches (" + strconv.Itoa(n) + ")"
+func (m Model) listTitle() title {
+	if m.view == viewStash {
+		t := title{name: "Stashes"}
+		if n := m.stashes.Len(); n > 0 {
+			t.meta = count(n, "")
 		}
-		return "Branches"
+		return t
+	}
+	if m.view == viewBranches {
+		t := title{name: "Branches"}
+		if n := m.branches.Len(); n > 0 {
+			t.meta = count(n, "")
+		}
+		return t
 	}
 	if m.view == viewLog {
 		// The ref comes before the count so a narrow pane truncates the
 		// number rather than the name: which history this is matters more
 		// than how much of it has been read.
-		scope := "Log"
-		if m.logRef != "" {
-			scope += " — " + m.logRef
-		}
+		t := title{name: "Log", subject: m.logRef}
 		if n := m.log.Len(); n > 0 {
 			// A trailing + means the count is what has been read so far, not
 			// how many commits the repository has.
@@ -1656,23 +1931,30 @@ func (m Model) listTitle() string {
 			if !m.log.AtEnd() {
 				more = "+"
 			}
-			return scope + " (" + strconv.Itoa(n) + more + ")"
+			t.meta = count(n, more)
 		}
-		return scope
+		return t
 	}
+	t := title{name: "Files"}
 	if n := m.files.Len(); n > 0 {
-		return "Files (" + strconv.Itoa(n) + ")"
+		t.meta = count(n, "")
 	}
-	return "Files"
+	if m.added+m.deleted > 0 {
+		t.meta += " " + theme.Add.Render("+"+strconv.Itoa(m.added)) + " " + theme.Del.Render("−"+strconv.Itoa(m.deleted))
+	}
+	return t
 }
 
-func (m Model) docTitle() string {
-	// The log and branch views share the commit pane, so they share its title.
+func (m Model) docTitle() title {
+	// The log, branch and stash views share the commit pane. The stash view
+	// names its entry by ref rather than by the sha the pane holds: stash@{0}
+	// is how the user knows it, and how the keys address it.
+	if m.view == viewStash {
+		st, _ := m.stashes.Selected()
+		return title{name: "Stash", subject: st.Ref}
+	}
 	if m.view != viewStatus {
-		if sha := m.detail.Title(); sha != "" {
-			return "Commit — " + sha
-		}
-		return "Commit"
+		return title{name: "Commit", subject: m.detail.Title()}
 	}
 	return diffTitle(m.diff.Title(), m.stagedSide())
 }
@@ -1683,6 +1965,8 @@ func (m Model) listView() string {
 		return m.log.View()
 	case viewBranches:
 		return m.branches.View()
+	case viewStash:
+		return m.stashes.View()
 	}
 	return m.files.View()
 }
@@ -1704,7 +1988,7 @@ func (m Model) header() string {
 	case ref == "":
 		ref = "loading…"
 	}
-	return theme.Title.Render(filepath.Base(m.root)) + theme.TitleDim.Render("  ⎇ "+ref)
+	return theme.Title.Render(filepath.Base(m.root)) + "  " + theme.Branch.Render("⎇ "+ref)
 }
 
 // framed draws a pane at an exact size.
@@ -1713,7 +1997,10 @@ func (m Model) header() string {
 // border: lipgloss sizes a border to whatever it wraps, so a pane showing
 // "loading…" would draw a box a few cells wide next to a full-height
 // neighbour.
-func (m Model) framed(title, body string, width int, focused bool) string {
+//
+// The title is set in one cell from the border and ruled off from the body,
+// so a list whose first row is itself a heading does not read as two.
+func (m Model) framed(t title, body string, width int, focused bool) string {
 	inner := m.contentW(width)
 	height := m.contentH()
 
@@ -1722,24 +2009,21 @@ func (m Model) framed(title, body string, width int, focused bool) string {
 		return sized
 	}
 
-	style := theme.Title
-	if !focused {
-		style = theme.TitleDim
-	}
-	head := lipgloss.NewStyle().Width(inner).Render(style.Render(ansi.Truncate(title, inner, "…")))
+	head := lipgloss.NewStyle().Width(inner).Render(" " + ansi.Truncate(t.render(focused), max(inner-1, 0), "…"))
+	rule := theme.Rule.Render(strings.Repeat("─", inner))
 
-	return theme.Border(focused).Render(lipgloss.JoinVertical(lipgloss.Left, head, sized))
+	return theme.Border(focused).Render(lipgloss.JoinVertical(lipgloss.Left, head, rule, sized))
 }
 
-func diffTitle(path string, staged bool) string {
+func diffTitle(path string, staged bool) title {
 	if path == "" {
-		return "Diff"
+		return title{name: "Diff"}
 	}
 	side := "worktree"
 	if staged {
 		side = "staged"
 	}
-	return "Diff — " + path + " (" + side + ")"
+	return title{name: "Diff", subject: path, meta: theme.TitleDim.Render("(" + side + ")")}
 }
 
 func short(sha string) string {

@@ -20,23 +20,10 @@ import (
 const dateFormat = "2006-01-02"
 
 // Branches lists the local branches.
-//
-// ponytail: this is the third pane carrying its own copy of the same
-// cursor/offset/clamp arithmetic (see Files and Log). Two copies were a
-// coincidence; three is the point at which a shared embedded list type pays
-// for itself. Extract it when a fourth pane wants one, not before — the three
-// rows render nothing alike, so only the scrolling would be shared.
 type Branches struct {
+	list
 	branches []git.Branch
-	cursor   int
-	offset   int
-	width    int
-	height   int
 }
-
-func (b *Branches) SetSize(w, h int) { b.width, b.height = w, h; b.clampOffset() }
-
-func (b *Branches) Len() int { return len(b.branches) }
 
 // SetBranches replaces the list, keeping the cursor on the same branch where
 // it still exists. A reload after a commit must not walk the selection off the
@@ -45,26 +32,26 @@ func (b *Branches) Len() int { return len(b.branches) }
 // The fallback is the current branch rather than row zero, which covers both
 // the first read and a branch that has since been deleted or renamed: where
 // the user is standing is a better answer than whatever sorts first.
-func (b *Branches) SetBranches(list []git.Branch) {
+func (b *Branches) SetBranches(branches []git.Branch) {
 	want := b.SelectedName()
-	b.branches = list
+	b.branches = branches
 
 	b.cursor = 0
-	for i, br := range list {
+	for i, br := range branches {
 		if br.Name == want || (want == "" && br.Current) {
 			b.cursor = i
 			break
 		}
 	}
 	if want != "" && b.SelectedName() != want {
-		for i, br := range list {
+		for i, br := range branches {
 			if br.Current {
 				b.cursor = i
 				break
 			}
 		}
 	}
-	b.clampOffset()
+	b.setLen(len(branches))
 }
 
 func (b *Branches) Selected() (git.Branch, bool) {
@@ -82,60 +69,6 @@ func (b *Branches) SelectedName() string {
 	return br.Name
 }
 
-func (b *Branches) MoveBy(delta int) { b.cursor += delta; b.clampCursor() }
-func (b *Branches) MoveTo(i int)     { b.cursor = i; b.clampCursor() }
-
-// SelectRow puts the cursor on a visible row. See Files.SelectRow for why the
-// row is counted from the top of the pane and why one past the end is ignored.
-func (b *Branches) SelectRow(row int) {
-	if row < 0 || row >= b.height || b.offset+row >= len(b.branches) {
-		return
-	}
-	b.MoveTo(b.offset + row)
-}
-func (b *Branches) Top()    { b.MoveTo(0) }
-func (b *Branches) Bottom() { b.MoveTo(len(b.branches) - 1) }
-
-func (b *Branches) HalfPageDown() { b.MoveBy(b.halfPage()) }
-func (b *Branches) HalfPageUp()   { b.MoveBy(-b.halfPage()) }
-
-func (b *Branches) halfPage() int {
-	if h := b.height / 2; h > 0 {
-		return h
-	}
-	return 1
-}
-
-func (b *Branches) clampCursor() {
-	if b.cursor >= len(b.branches) {
-		b.cursor = len(b.branches) - 1
-	}
-	if b.cursor < 0 {
-		b.cursor = 0
-	}
-	b.clampOffset()
-}
-
-// clampOffset keeps the cursor inside the visible window.
-func (b *Branches) clampOffset() {
-	if b.height <= 0 {
-		b.offset = 0
-		return
-	}
-	if b.cursor < b.offset {
-		b.offset = b.cursor
-	}
-	if b.cursor >= b.offset+b.height {
-		b.offset = b.cursor - b.height + 1
-	}
-	if max := len(b.branches) - b.height; b.offset > max {
-		b.offset = max
-	}
-	if b.offset < 0 {
-		b.offset = 0
-	}
-}
-
 func (b *Branches) View() string {
 	if len(b.branches) == 0 {
 		// Not "no branches": a repository always has the one HEAD points at,
@@ -143,13 +76,9 @@ func (b *Branches) View() string {
 		return theme.Dim.Render("no branches yet")
 	}
 
-	end := b.offset + b.height
-	if end > len(b.branches) {
-		end = len(b.branches)
-	}
-
-	rows := make([]string, 0, end-b.offset)
-	for i := b.offset; i < end; i++ {
+	start, end := b.window()
+	rows := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
 		rows = append(rows, b.row(i))
 	}
 	return strings.Join(rows, "\n")

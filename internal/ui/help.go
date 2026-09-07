@@ -23,9 +23,9 @@ const gutter = "   "
 // from the model but the keymap, and a golden test can then render it without
 // driving an Update loop.
 //
-// ponytail: no scrolling. The keymap is 23 bindings, which fits two columns on
-// the smallest terminal the rest of the UI targets; add paging when it
-// outgrows the screen rather than before.
+// ponytail: no scrolling. The keymap is 36 bindings, which fits three columns
+// on an 80x24 terminal; a column that does not fit is cut. Add paging when a
+// terminal the rest of the UI targets loses a binding, not before.
 func helpView(k keys.Map, width, height int) string {
 	// The border takes two of the columns the caller offered, and the border
 	// plus the title three of the rows.
@@ -34,9 +34,10 @@ func helpView(k keys.Map, width, height int) string {
 		return ""
 	}
 
-	groups := k.Bindings()
-	left, right := splitGroups(groups, maxRows)
-	rows := joinColumns(renderGroups(left), renderGroups(right))
+	var rows []string
+	for _, col := range splitGroups(k.Bindings(), maxRows) {
+		rows = joinColumns(rows, renderGroups(col))
+	}
 	if len(rows) > maxRows {
 		rows = rows[:maxRows]
 	}
@@ -55,26 +56,36 @@ func helpView(k keys.Map, width, height int) string {
 	return theme.Border(true).Render(lipgloss.JoinVertical(lipgloss.Left, head, body))
 }
 
-// splitGroups deals the groups into two columns, breaking at whichever group
-// boundary comes closest to halving the height. Everything goes in one column
-// when the list already fits, which is what makes the box tall and narrow
-// rather than short and wide.
-func splitGroups(groups [][]keys.Binding, maxRows int) (left, right [][]keys.Binding) {
-	if rowsFor(groups) <= maxRows {
-		return groups, nil
+// splitGroups deals the groups into as few columns as the height allows,
+// breaking only at group boundaries and aiming each column at an equal share
+// of the rows. Everything goes in one column when the list already fits,
+// which is what makes the box tall and narrow rather than short and wide.
+func splitGroups(groups [][]keys.Binding, maxRows int) [][][]keys.Binding {
+	total := rowsFor(groups)
+	if total <= maxRows {
+		return [][][]keys.Binding{groups}
 	}
+	ncols := (total + maxRows - 1) / maxRows
 
-	best, bestDelta := 0, -1
-	for i := 1; i < len(groups); i++ {
-		delta := rowsFor(groups[:i]) - rowsFor(groups[i:])
-		if delta < 0 {
-			delta = -delta
+	// Fill each column to an equal share of the rows, breaking at the group
+	// boundary before it. Groups do not divide evenly, so a share that is too
+	// tight spills a lone group into one column more than the height needs;
+	// when that happens the share grows by a row and the deal is redone.
+	for target := (total + ncols - 1) / ncols; ; target++ {
+		var cols [][][]keys.Binding
+		var cur [][]keys.Binding
+		for _, g := range groups {
+			if len(cur) > 0 && rowsFor(cur)+1+len(g) > target {
+				cols = append(cols, cur)
+				cur = nil
+			}
+			cur = append(cur, g)
 		}
-		if bestDelta < 0 || delta < bestDelta {
-			best, bestDelta = i, delta
+		cols = append(cols, cur)
+		if len(cols) <= ncols || target >= maxRows {
+			return cols
 		}
 	}
-	return groups[:best], groups[best:]
 }
 
 // rowsFor is the height of a run of groups: one row per binding, plus a blank
@@ -118,6 +129,9 @@ func renderGroups(groups [][]keys.Binding) []string {
 func joinColumns(left, right []string) []string {
 	if len(right) == 0 {
 		return left
+	}
+	if len(left) == 0 {
+		return right
 	}
 
 	leftW := 0

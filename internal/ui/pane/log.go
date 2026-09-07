@@ -18,13 +18,9 @@ const maxLanes = 6
 
 // Log lists commits with a lane graph down the left.
 type Log struct {
+	list
 	commits []git.Commit
 	graph   []graphRow
-
-	cursor int
-	offset int
-	width  int
-	height int
 
 	// end marks the log as fully loaded, so scrolling to the bottom stops
 	// asking for a page that does not exist.
@@ -39,9 +35,6 @@ type graphRow struct {
 	cells []rune
 }
 
-func (l *Log) SetSize(w, h int) { l.width, l.height = w, h; l.clampOffset() }
-
-func (l *Log) Len() int      { return len(l.commits) }
 func (l *Log) AtEnd() bool   { return l.end }
 func (l *Log) SetEnd(v bool) { l.end = v }
 
@@ -58,6 +51,7 @@ func (l *Log) SetCommits(commits []git.Commit) {
 			break
 		}
 	}
+	l.setLen(len(commits))
 	l.clampOffset()
 }
 
@@ -87,7 +81,7 @@ func (l *Log) Append(commits []git.Commit) {
 		l.commits = append(l.commits, c)
 	}
 	l.graph = buildGraph(l.commits)
-	l.clampOffset()
+	l.setLen(len(l.commits))
 }
 
 func (l *Log) Selected() (git.Commit, bool) {
@@ -124,76 +118,17 @@ func (l *Log) pageMargin() int {
 	return 1
 }
 
-func (l *Log) MoveBy(delta int) { l.cursor += delta; l.clampCursor() }
-func (l *Log) MoveTo(i int)     { l.cursor = i; l.clampCursor() }
-
-// SelectRow puts the cursor on a visible row. See Files.SelectRow for why the
-// row is counted from the top of the pane and why one past the end is ignored.
-func (l *Log) SelectRow(row int) {
-	if row < 0 || row >= l.height || l.offset+row >= len(l.commits) {
-		return
-	}
-	l.MoveTo(l.offset + row)
-}
-
-func (l *Log) Top() { l.MoveTo(0) }
-
 // Bottom is the deepest commit loaded, not the root: the rest is a page that
-// has not been read yet.
-func (l *Log) Bottom() { l.MoveTo(len(l.commits) - 1) }
-
-func (l *Log) HalfPageDown() { l.MoveBy(l.halfPage()) }
-func (l *Log) HalfPageUp()   { l.MoveBy(-l.halfPage()) }
-
-func (l *Log) halfPage() int {
-	if h := l.height / 2; h > 0 {
-		return h
-	}
-	return 1
-}
-
-func (l *Log) clampCursor() {
-	if l.cursor >= len(l.commits) {
-		l.cursor = len(l.commits) - 1
-	}
-	if l.cursor < 0 {
-		l.cursor = 0
-	}
-	l.clampOffset()
-}
-
-// clampOffset keeps the cursor inside the visible window.
-func (l *Log) clampOffset() {
-	if l.height <= 0 {
-		l.offset = 0
-		return
-	}
-	if l.cursor < l.offset {
-		l.offset = l.cursor
-	}
-	if l.cursor >= l.offset+l.height {
-		l.offset = l.cursor - l.height + 1
-	}
-	if max := len(l.commits) - l.height; l.offset > max {
-		l.offset = max
-	}
-	if l.offset < 0 {
-		l.offset = 0
-	}
-}
+// has not been read yet. The motion itself is the embedded list's.
 
 func (l *Log) View() string {
 	if len(l.commits) == 0 {
 		return theme.Dim.Render("no commits yet")
 	}
 
-	end := l.offset + l.height
-	if end > len(l.commits) {
-		end = len(l.commits)
-	}
-
-	rows := make([]string, 0, end-l.offset)
-	for i := l.offset; i < end; i++ {
+	start, end := l.window()
+	rows := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
 		rows = append(rows, l.row(i))
 	}
 	return strings.Join(rows, "\n")

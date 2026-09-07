@@ -26,6 +26,17 @@ var (
 	// yellow git itself uses for decorations.
 	Ref = lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af"))
 
+	// Branch is the badge for HEAD in the app header: the same yellow as Ref,
+	// but as a filled block, since which branch is checked out is the one
+	// thing worth reading before touching the index.
+	Branch = lipgloss.NewStyle().Bold(true).Padding(0, 1).
+		Foreground(lipgloss.Color("#1e1e2e")).Background(lipgloss.Color("#f9e2af"))
+
+	// Rule is the line under a pane title. It takes the unfocused border
+	// colour whatever the focus: the border already says which pane is
+	// focused, and a second signal in the same colour would only be louder.
+	Rule = lipgloss.NewStyle().Foreground(lipgloss.Color("#5a4049"))
+
 	// Cursor colours the key names in the help overlay.
 	Cursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f5c2e7"))
 	Title    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#cdd6f4"))

@@ -8,9 +8,10 @@ import (
 	"github.com/f3xp/bubblegit/internal/git"
 )
 
-// The harness builds an 80x24 frame: the app header on row 0, then two
-// bordered panes filling the rest. framed() draws a top border, a title, the
-// body, then a closing border, so body row 0 is terminal row 3.
+// The harness builds an 80x24 frame: the app header on row 0, the key bar on
+// row 23, and two bordered panes filling the rest. framed() draws a top border,
+// a title, a rule, the body, then a closing border, so body row 0 is terminal
+// row 4 and the last body row is 21.
 //
 // The views split the width differently — the status view's left pane, the
 // diff, takes 52 columns and the log view's commit 40 — so the columns here are
@@ -18,7 +19,7 @@ import (
 // view's split. Every view draws its document on the left and its list on the
 // right, so leftBody is always in the document and rightBody always in the list.
 const (
-	bodyTop   = 3
+	bodyTop   = 4
 	leftBody  = 3
 	rightBody = 60
 )
@@ -51,15 +52,17 @@ func TestHitTest(t *testing.T) {
 		ok   bool
 	}{
 		{"the app header is not a pane", 3, 0, focusList, -1, false},
+		{"the key bar is not a pane", 3, 23, focusList, -1, false},
 		{"below the frame", 3, 24, focusList, -1, false},
 		{"right of the frame", 80, 3, focusList, -1, false},
 		{"negative", -1, 3, focusList, -1, false},
 
 		{"first body row of the left pane", leftBody, bodyTop, focusDoc, 0, true},
-		{"last body row of the left pane", leftBody, 22, focusDoc, 19, true},
+		{"last body row of the left pane", leftBody, 21, focusDoc, 17, true},
 		{"the left pane's top border", leftBody, 1, focusDoc, -1, true},
 		{"the left pane's title", leftBody, 2, focusDoc, -1, true},
-		{"the left pane's bottom border", leftBody, 23, focusDoc, -1, true},
+		{"the rule under the left pane's title", leftBody, 3, focusDoc, -1, true},
+		{"the left pane's bottom border", leftBody, 22, focusDoc, -1, true},
 		{"the left pane's left border", 0, 10, focusDoc, -1, true},
 		{"the left pane's right border", 51, 10, focusDoc, -1, true},
 
@@ -94,7 +97,8 @@ func TestHitTest(t *testing.T) {
 
 // TestHitTestWithoutBorders covers the short terminal where layout() drops the
 // pane chrome. There is no border and no title row, so the body starts
-// directly under the app header and the edge columns are content.
+// directly under the app header, ends above the key bar, and the edge columns
+// are content.
 func TestHitTestWithoutBorders(t *testing.T) {
 	h := newHarness(t)
 	h.send(tea.WindowSizeMsg{Width: 80, Height: 4})
@@ -108,9 +112,9 @@ func TestHitTestWithoutBorders(t *testing.T) {
 		row  int
 	}{
 		{0, 1, focusDoc, 0},
-		{leftBody, 3, focusDoc, 2},
+		{leftBody, 2, focusDoc, 1},
 		{52, 1, focusList, 0},
-		{79, 3, focusList, 2},
+		{79, 2, focusList, 1},
 	} {
 		hit, ok := h.m.hitTest(tc.x, tc.y)
 		if !ok {
@@ -149,9 +153,10 @@ func TestHitTestWhenNarrow(t *testing.T) {
 func TestClickSelectsFileRow(t *testing.T) {
 	h := newHarness(t)
 
-	cmd := h.click(rightBody, bodyTop+3)
+	// Row 0 is the Tracked heading, so the fourth file is on row 4.
+	cmd := h.click(rightBody, bodyTop+4)
 	if got := h.m.SelectedPath(); got != "plain.txt" {
-		t.Fatalf("clicking the fourth row selected %q, want plain.txt", got)
+		t.Fatalf("clicking the fifth row selected %q, want plain.txt", got)
 	}
 	if cmd == nil {
 		t.Fatal("the click did not request the diff for the row it selected")
@@ -167,11 +172,24 @@ func TestClickSelectsFileRow(t *testing.T) {
 // list does not.
 func TestClickOnSelectedRowSpawnsNothing(t *testing.T) {
 	h := newHarness(t)
-	if cmd := h.click(rightBody, bodyTop); cmd != nil {
+	if cmd := h.click(rightBody, bodyTop+1); cmd != nil {
 		t.Error("clicking the already-selected row requested a diff")
 	}
 	if got := h.m.SelectedPath(); got != "logo.png" {
 		t.Errorf("the selection moved to %q", got)
+	}
+}
+
+// TestClickOnSectionHeaderIsInert: the Tracked heading is row 0 of the list.
+// It is a label, so a click on it neither moves the cursor nor reads a diff.
+func TestClickOnSectionHeaderIsInert(t *testing.T) {
+	h := newHarness(t)
+	h.press("j")
+	if cmd := h.click(rightBody, bodyTop); cmd != nil {
+		t.Error("clicking the heading requested a diff")
+	}
+	if got := h.m.SelectedPath(); got != "main.go" {
+		t.Errorf("clicking the heading moved the selection to %q", got)
 	}
 }
 

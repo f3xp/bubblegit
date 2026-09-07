@@ -29,12 +29,14 @@ go run ./cmd/bubblegit    # from anywhere inside a git repository
 
 ## Views
 
-`1` working tree, `2` log, `3` branches. Each view is a pair of panes, and `tab` switches
-between them.
+`1` working tree, `2` log, `3` branches, `4` stashes. Each view is a pair of panes, and `tab`
+switches between them. The key bar along the bottom lists the keys that do something from
+where the cursor is; `?` lists them all.
 
-**Working tree (`1`).** The diff of the selected file on the left, files on the right. `t`
-toggles the diff between the worktree and the staged side, and the diff pane title says which
-side you are looking at.
+**Working tree (`1`).** The diff of the selected file on the left, files on the right. The
+files are in two sections, tracked and untracked, and each tracked row ends in the lines it adds
+and removes; the pane title sums them. `t` toggles the diff between the worktree and the staged
+side, and the diff pane title says which side you are looking at.
 
 **Log (`2`).** The selected commit on the left, commits with a graph column and their ref
 labels on the right. It
@@ -73,13 +75,19 @@ Each row shows how far the branch has drifted from its upstream:
 | `gone` | the upstream ref was deleted |
 | blank | the branch tracks nothing |
 
+**Stashes (`4`).** The selected stash on the left, the stash list on the right, newest first.
+The patch is what the stash holds against the commit it was taken on; the untracked files of a
+stash taken with `s` are kept by git on a separate parent and are not part of that patch. `p`
+pops the selected stash, `a` applies it and keeps it, `d` drops it. Nothing else in this view
+writes.
+
 ## Keys
 
 **Anywhere**
 
 | Key | Action |
 | --- | --- |
-| `1` `2` `3` | switch view |
+| `1` `2` `3` `4` | switch view |
 | `tab` | switch pane |
 | `j` `k` | move the cursor |
 | `g` `G` | jump to the ends |
@@ -96,8 +104,16 @@ Each row shows how far the branch has drifted from its upstream:
 | `t` | toggle between the worktree and staged sides |
 | `c` | open the commit message editor |
 | `C` | open it pre-filled with HEAD's message, to amend |
+| `A` | stage everything, untracked files included |
+| `U` | unstage everything |
+| `D` | discard every unstaged change to a tracked file (asks first) |
+| `X` | delete every untracked file (asks first) |
+| `s` | stash everything, untracked files included |
+| `S` | stash tracked changes only |
+| `p` | pop the newest stash |
 
-`space` and `a` reverse into un-staging when the pane shows the staged side.
+`space` and `a` reverse into un-staging when the pane shows the staged side. `D` leaves the
+index alone, so `U` then `D` is a full reset to HEAD.
 
 **Commit message editor**
 
@@ -120,6 +136,17 @@ The editor owns every other key while it is open, so `q` types a q.
 
 There is no confirmation step. A switch is reversible, and the one way it loses work is the
 case git refuses on its own. When git refuses, the pane shows what it said.
+
+**Stashes**
+
+| Key | Action |
+| --- | --- |
+| `p` | pop the stash under the cursor |
+| `a` | apply it and keep it |
+| `d` | drop it (asks first) |
+
+The keys that lose work — `D`, `X` and `d` — ask in the key bar first. `y` goes ahead; any
+other key is no, and is swallowed rather than acted on.
 
 ## Mouse
 

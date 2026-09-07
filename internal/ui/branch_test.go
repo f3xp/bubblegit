@@ -376,7 +376,7 @@ func TestBranchLogScopesTheLogView(t *testing.T) {
 	h.selectCommit("add feature.txt")
 	// The title is what licenses the scope existing at all: a log that changed
 	// which history it walked without saying so reads as a bug.
-	if title := h.m.listTitle(); title != "Log — feature (3)" {
+	if title := h.m.listTitle().String(); title != "Log — feature (3)" {
 		t.Errorf("the log pane is titled %q, want it to name the branch", title)
 	}
 
@@ -386,7 +386,7 @@ func TestBranchLogScopesTheLogView(t *testing.T) {
 	if h.m.log.Len() != 4 {
 		t.Fatalf("back on HEAD the log holds %d commits, want the fixture's 4", h.m.log.Len())
 	}
-	if title := h.m.listTitle(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 }
@@ -400,7 +400,7 @@ func TestBranchLogOnCurrentBranchStaysUnscoped(t *testing.T) {
 	h.selectBranch("main")
 	h.run(h.enter())
 
-	if title := h.m.listTitle(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 }
@@ -430,7 +430,7 @@ func TestBranchLogRecoversFromAMissingRef(t *testing.T) {
 	if h.m.log.Len() != 4 {
 		t.Fatalf("the log key did not recover: it holds %d commits, want the fixture's 4", h.m.log.Len())
 	}
-	if title := h.m.listTitle(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 }
@@ -458,7 +458,7 @@ func TestBranchLogEscapeReturnsToBranches(t *testing.T) {
 	// round — two view changes before the log key sees the scope at all.
 	h.maybeRun(h.key("1"))
 	h.run(h.key("2"))
-	if title := h.m.listTitle(); title != "Log (4)" {
+	if title := h.m.listTitle().String(); title != "Log (4)" {
 		t.Errorf("the log pane is titled %q, want the unscoped title", title)
 	}
 

@@ -68,3 +68,17 @@ func TestHelpPopupFitsSmallTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestHelpColumnsAreBalanced: on a terminal tall enough for two columns the
+// popup draws two, not two full ones and a third with three rows in it.
+func TestHelpColumnsAreBalanced(t *testing.T) {
+	h := newHarness(t)
+	h.send(tea.WindowSizeMsg{Width: 120, Height: 40})
+	cols := splitGroups(h.m.keys.Bindings(), 40-4-3)
+	if len(cols) != 2 {
+		t.Fatalf("got %d columns, want 2", len(cols))
+	}
+	if a, b := rowsFor(cols[0]), rowsFor(cols[1]); a-b > 6 || b-a > 6 {
+		t.Errorf("columns hold %d and %d rows, want them within a group of each other", a, b)
+	}
+}

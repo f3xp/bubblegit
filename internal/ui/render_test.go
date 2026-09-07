@@ -386,7 +386,7 @@ func TestLayoutFitsTerminal(t *testing.T) {
 	}
 	// Both views, because each splits the terminal by a different fraction and
 	// the clamps have to hold for either one.
-	views := map[string]view{"status": viewStatus, "log": viewLog, "branches": viewBranches}
+	views := map[string]view{"status": viewStatus, "log": viewLog, "branches": viewBranches, "stash": viewStash}
 
 	for _, sz := range sizes {
 		for name, v := range views {

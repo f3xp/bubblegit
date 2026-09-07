@@ -34,22 +34,22 @@ func TestSelectRowCountsFromTheVisibleWindow(t *testing.T) {
 }
 
 // TestSelectRowIgnoresRowsOffTheList covers the blank space a short list
-// leaves below itself, and a row past the bottom of the pane. Neither is a
-// request to select the last entry.
+// leaves below itself, a row past the bottom of the pane, and the section
+// heading on row 0. None is a request to select the entry nearest it.
 func TestSelectRowIgnoresRowsOffTheList(t *testing.T) {
 	var f Files
 	f.SetSize(40, 10)
 	f.SetFiles([]git.FileStatus{{Path: "a"}, {Path: "b"}})
 
-	for _, row := range []int{-1, 2, 9, 10, 99} {
+	for _, row := range []int{-1, 0, 3, 9, 10, 99} {
 		f.SelectRow(row)
 		if sel, _ := f.Selected(); sel.Path != "a" {
 			t.Errorf("row %d moved the cursor to %q, want it left on a", row, sel.Path)
 		}
 	}
-	f.SelectRow(1)
+	f.SelectRow(2)
 	if sel, _ := f.Selected(); sel.Path != "b" {
-		t.Errorf("row 1 selected %q, want b", sel.Path)
+		t.Errorf("row 2 selected %q, want b", sel.Path)
 	}
 }
 
