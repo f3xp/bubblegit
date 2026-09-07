@@ -64,7 +64,8 @@ func (r *Runner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	return r.run(ctx, nil, args)
 }
 
-// RunStdin is Run with data piped to git's stdin — used by `apply --cached`.
+// RunStdin is Run with data piped to git's stdin, for `apply --cached` and
+// for the revision lists Log feeds to `--stdin`.
 func (r *Runner) RunStdin(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	return r.run(ctx, stdin, args)
 }

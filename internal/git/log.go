@@ -48,11 +48,20 @@ const logFields = 7
 //
 // The tips come from Frontier, not from the last row on screen — see there for
 // why the obvious one-SHA cursor loses commits.
+//
+// The tips go to git on stdin, one per line, rather than on the command line.
+// A first page starts from every ref in the repository, and at ~41 bytes a SHA
+// a few hundred remotes' worth of branches and tags overflows the 32k-character
+// command line on Windows; stdin has no such ceiling. See TestLogManyTips.
 func Log(ctx context.Context, r *Runner, from []string, n int) ([]Commit, error) {
 	args := []string{"log", "-z", "--no-color", "--format=" + logFormat, "-n", strconv.Itoa(n)}
-	args = append(args, from...)
+	var stdin []byte
+	if len(from) > 0 {
+		args = append(args, "--stdin")
+		stdin = []byte(strings.Join(from, "\n") + "\n")
+	}
 
-	out, err := r.Run(ctx, args...)
+	out, err := r.RunStdin(ctx, stdin, args...)
 	if err != nil {
 		// An unborn branch has no commits to walk. That is a normal state for
 		// a freshly initialised repo, and it renders as an empty log rather
@@ -71,9 +80,6 @@ func Log(ctx context.Context, r *Runner, from []string, n int) ([]Commit, error)
 // stash. One process, peeled and deduplicated by git, so an annotated tag
 // yields the commit it tags rather than the tag object, which no log page
 // would ever match.
-//
-// ponytail: the tips go on the log command line, ~41 bytes each. Switch Log to
-// --stdin past a few thousand refs.
 func Tips(ctx context.Context, r *Runner) ([]string, error) {
 	out, err := r.Run(ctx, "rev-list", "--no-walk", "--branches", "--remotes", "--tags", "HEAD")
 	if err != nil {

@@ -82,7 +82,11 @@ func cached(tb testing.TB, script string, args ...string) string {
 		key += "-" + a
 	}
 	dest := filepath.Join(os.TempDir(), fmt.Sprintf("bubblegit-fixture-%s-%s", key, scriptsHash(tb, script)))
-	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil {
+	// HEAD rather than the .git directory: macOS purges files in $TMPDIR
+	// that have gone untouched for a few days and leaves the directories, so
+	// a fixture can be hollowed out with its .git still standing. A repo
+	// without HEAD is not a repo, and is rebuilt.
+	if _, err := os.Stat(filepath.Join(dest, ".git", "HEAD")); err == nil {
 		return dest
 	}
 

@@ -221,6 +221,46 @@ func TestLogOnUnbornBranch(t *testing.T) {
 	}
 }
 
+// TestLogManyTips pins that the tips reach git on stdin. A first page starts
+// from every ref in the repository, and enough of them on the command line
+// overflows Windows' 32k-character limit: 5000 SHAs is ~200k, so this fails
+// there the moment Log puts the tips back in argv.
+//
+// The tips are copies of HEAD rather than of Tips(): every fixture commit
+// carries the same timestamp, so a walk from several tips orders them by the
+// order the tips were given, and only a walk from HEAD alone is comparable
+// with Log's own default.
+func TestLogManyTips(t *testing.T) {
+	ctx := context.Background()
+	r := git.New(gittest.Small(t))
+
+	want, err := git.Log(ctx, r, nil, git.LogPageSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := git.ReadHead(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := make([]string, 5000)
+	for i := range from {
+		from[i] = head.Commit
+	}
+
+	got, err := git.Log(ctx, r, from, git.LogPageSize)
+	if err != nil {
+		t.Fatalf("Log with %d tips: %v", len(from), err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d commits from %d tips, want %d", len(got), len(from), len(want))
+	}
+	for i := range want {
+		if got[i].SHA != want[i].SHA {
+			t.Errorf("commit %d is %s, want %s", i, got[i].Short, want[i].Short)
+		}
+	}
+}
+
 // TestShowRendersMergeAndRoot guards the detail pane against the two commits
 // that render blank under the obvious commands.
 //
