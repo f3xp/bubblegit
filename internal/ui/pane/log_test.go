@@ -242,6 +242,8 @@ func TestParseRefs(t *testing.T) {
 		"HEAD":                               {{name: "HEAD", head: true}},
 		"HEAD -> main, origin/main, tag: v1": {{name: "main", head: true}, {name: "origin/main", kind: refRemote}, {name: "v1", kind: refTag}},
 		"tag: a/b":                           {{name: "a/b", kind: refTag}},
+		// A remote's HEAD is dropped: the branch it points at is listed too.
+		"origin/master, origin/HEAD, master": {{name: "origin/master", kind: refRemote}, {name: "master"}},
 	}
 	for in, want := range cases {
 		if got := parseRefs(in); !reflect.DeepEqual(got, want) {
@@ -254,7 +256,7 @@ func TestParseRefs(t *testing.T) {
 // subject stays on the row.
 func TestRefPillsCapAtTwo(t *testing.T) {
 	got := ansi.Strip(refPills("HEAD -> main, origin/main, tag: v1"))
-	if want := " ★ main   origin/main  +1 "; got != want {
+	if want := " ★ main   origin/main   +1  "; got != want {
 		t.Errorf("refPills = %q, want %q", got, want)
 	}
 	if refPills("") != "" {

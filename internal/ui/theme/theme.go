@@ -37,6 +37,10 @@ var (
 	// git colours remotes and tags by default.
 	Remote = Branch.Background(lipgloss.Color("#89b4fa"))
 	Tag    = Branch.Background(lipgloss.Color("#a6e3a1"))
+	// More is the "+N" pill for the refs a row had no room for: the same
+	// shape, in the dim grey, so it reads as one of the family rather than
+	// as a stray count.
+	More = Branch.Foreground(lipgloss.Color("#cdd6f4")).Background(lipgloss.Color("#45475a"))
 
 	// Rule is the line under a pane title. It takes the unfocused border
 	// colour whatever the focus: the border already says which pane is

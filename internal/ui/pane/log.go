@@ -668,6 +668,10 @@ func parseRefs(s string) []ref {
 	for _, part := range strings.Split(s, ", ") {
 		r := ref{name: part}
 		switch {
+		// A remote's HEAD is a symref to one of its branches, which is on the
+		// same commit and gets its own pill; this one would only take a slot.
+		case strings.HasSuffix(part, "/HEAD"):
+			continue
 		case part == "HEAD":
 			r.head = true
 		case strings.HasPrefix(part, "HEAD -> "):
@@ -696,7 +700,7 @@ func refPills(s string) string {
 	var b strings.Builder
 	for i, r := range refs {
 		if i == maxPills {
-			b.WriteString(theme.Dim.Render("+"+strconv.Itoa(len(refs)-maxPills)) + " ")
+			b.WriteString(theme.More.Render("+"+strconv.Itoa(len(refs)-maxPills)) + " ")
 			break
 		}
 		name := r.name
