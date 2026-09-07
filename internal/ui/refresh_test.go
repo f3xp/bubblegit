@@ -3,6 +3,7 @@ package ui
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -118,4 +119,48 @@ func (h *harness) filePaths() []string {
 		}
 	}
 	return paths
+}
+
+// TestRefreshKeepsDiffOnScreen: a re-read of the diff already on screen keeps
+// its rows until the new ones land. Blanking to "loading…" for the round trip
+// is a flicker on every tick and every stage keystroke.
+func TestRefreshKeepsDiffOnScreen(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+
+	cmd := h.key("R")
+	if body := h.m.Body(); strings.Contains(body, "loading…") || !strings.Contains(body, "18 edited") {
+		t.Fatalf("diff blanked while its own re-read was in flight:\n%s", body)
+	}
+	h.run(cmd)
+	if body := h.m.Body(); !strings.Contains(body, "18 edited") {
+		t.Fatalf("diff missing after the re-read landed:\n%s", body)
+	}
+}
+
+// TestRefreshKeepsDetailOnScreen is the same for the commit pane.
+func TestRefreshKeepsDetailOnScreen(t *testing.T) {
+	h := newHarness(t)
+	h.enterLog()
+	if !strings.Contains(h.m.Body(), "commit ") {
+		t.Fatal("precondition: the detail pane should show a commit")
+	}
+
+	h.key("R")
+	if body := h.m.Body(); strings.Contains(body, "loading…") || !strings.Contains(body, "commit ") {
+		t.Fatalf("detail blanked while its own re-read was in flight:\n%s", body)
+	}
+}
+
+// TestToggleSideBlanksDiff: the other side of the same file is a different
+// diff, so it blanks the way a different file does. Worktree rows under a
+// "(staged)" title would be the wrong data under the right name.
+func TestToggleSideBlanksDiff(t *testing.T) {
+	h := newHarness(t)
+	h.selectFile("two-hunks.txt")
+
+	h.key("t")
+	if body := h.m.Body(); !strings.Contains(body, "loading…") {
+		t.Fatalf("diff kept the worktree rows under the staged title:\n%s", body)
+	}
 }

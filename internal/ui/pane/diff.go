@@ -29,6 +29,11 @@ type Diff struct {
 	// the moment a new one is requested. Reloading the same file after staging
 	// has to leave the cursor where the user left it.
 	path string
+	// staged is the side of the last request. Request-side rather than
+	// loaded-side, like Detail.sha: the generation check discards stale
+	// answers, so the last request is what the next SetDiff will load, and
+	// the render path keeps its signature.
+	staged bool
 
 	loading bool
 	err     error
@@ -55,20 +60,32 @@ func (d *Diff) SetSize(w, h int) {
 	d.scrollToCursor()
 }
 
-// SetLoading clears the body while a new diff is in flight.
+// SetLoading marks a new diff in flight, clearing the body when it is for a
+// different diff than the one on screen.
 //
-// This is not cosmetic. With a ~14ms process spawn, holding j in the file
+// The clear is not cosmetic. With a ~14ms process spawn, holding j in the file
 // list leaves the previous file's diff on screen for a visible beat — correct
-// data, rendered against the wrong filename, which reads as a bug.
-func (d *Diff) SetLoading(title string) {
+// data, rendered against the wrong filename, which reads as a bug. The side
+// is part of the identity for the same reason: worktree rows under a
+// "(staged)" title are the same lie.
+//
+// A re-read of the same diff — after a stage, a refresh, a save in an editor
+// — keeps its rows instead. Blanking there paints "loading…" for a frame on
+// every keystroke and every tick, which is the flicker. Ready() is false
+// meanwhile, so a stage key still waits for the answer rather than building a
+// patch from rows the index has moved out from under.
+func (d *Diff) SetLoading(path string, staged bool) {
 	d.loading = true
 	d.err = nil
-	d.title = title
-	// The row map goes with the content. It points into a diff that is no
-	// longer what this pane stands for, so a stage key pressed between a
-	// request and its answer would build a patch for the file that was on
-	// screen a moment ago and apply it without complaint. The cursor row is
-	// kept: reloading the same path has to land where the user left it.
+	d.title = path
+	same := path == d.path && staged == d.staged
+	d.staged = staged
+	if same {
+		return
+	}
+	// The row map goes with the content: it points into a diff that is no
+	// longer what this pane stands for. The cursor row is kept, so reloading
+	// the same path lands where the user left it.
 	d.fd, d.rows = git.FileDiff{}, nil
 	d.vp.SetContent("")
 }
@@ -249,7 +266,9 @@ func (d *Diff) View() string {
 	switch {
 	case d.err != nil:
 		return theme.Err.Render("git error: " + d.err.Error())
-	case d.loading:
+	// Loading with rows still on screen falls through: they are the last
+	// answer for this same diff, kept until the new one lands.
+	case d.loading && d.vp.TotalLineCount() == 0:
 		return theme.Dim.Render("loading…")
 	case d.vp.TotalLineCount() == 0:
 		return theme.Dim.Render(d.empty)

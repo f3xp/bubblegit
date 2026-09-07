@@ -37,17 +37,22 @@ func (d *Detail) SetSize(w, h int) {
 	d.clampOffset()
 }
 
-// SetLoading clears the body while a new commit is in flight, so a stale patch
-// is never on screen under a new commit's title. sha is the full object name,
-// not the abbreviation: it is what SetDetail compares against to recognise a
-// re-read of the same commit.
+// SetLoading marks a new commit in flight, clearing the body when it is a
+// different commit than the one on screen, so a stale patch is never under a
+// new commit's title. sha is the full object name, not the abbreviation: it is
+// what SetDetail compares against to recognise a re-read of the same commit.
 //
-// The scroll offset is deliberately kept, the way the diff pane keeps its
-// cursor row. Re-reading the same commit has to land where the reader left it.
+// A re-read of the same commit — a refresh, mostly — keeps its rows until the
+// new ones land, the way the diff pane does; blanking would paint "loading…"
+// for a frame on every tick. The scroll offset is kept for the same reason.
 func (d *Detail) SetLoading(sha string) {
 	d.loading = true
 	d.err = nil
+	same := sha == d.sha
 	d.sha = sha
+	if same {
+		return
+	}
 	d.vp.SetContent("")
 }
 
@@ -147,7 +152,7 @@ func (d *Detail) View() string {
 	switch {
 	case d.err != nil:
 		return theme.Err.Render("git error: " + d.err.Error())
-	case d.loading:
+	case d.loading && d.vp.TotalLineCount() == 0:
 		return theme.Dim.Render("loading…")
 	case d.vp.TotalLineCount() == 0:
 		return theme.Dim.Render(d.empty)

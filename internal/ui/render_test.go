@@ -593,7 +593,7 @@ func TestDiffCursorStaysPutAcrossReload(t *testing.T) {
 	h.focusDiffOn(git.LineAdd, "18 edited")
 
 	_, _, before, _ := h.m.diff.Selection()
-	h.m.diff.SetLoading("two-hunks.txt")
+	h.m.diff.SetLoading("two-hunks.txt", false)
 	h.resolveDiff()
 
 	if _, _, after, _ := h.m.diff.Selection(); after != before {

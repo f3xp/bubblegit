@@ -384,7 +384,7 @@ func (m *Model) loadDiff() tea.Cmd {
 	staged := m.stagedSide()
 	untracked := sel.IsUntracked()
 
-	m.diff.SetLoading(sel.Path)
+	m.diff.SetLoading(sel.Path, staged)
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
