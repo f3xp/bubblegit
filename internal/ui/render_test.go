@@ -205,7 +205,7 @@ func (h *harness) resolveDiff() {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.send(diffMsg{gen: h.m.diffGen, content: pane.RenderDiff(d)})
+	h.send(diffMsg{epoch: h.m.diffEpoch, key: h.m.keyFor(sel), content: pane.RenderDiff(d)})
 }
 
 // TestDiffIsRenderedInTheCommand pins where the expensive half of showing a
@@ -223,6 +223,9 @@ func TestDiffIsRenderedInTheCommand(t *testing.T) {
 	h := newHarness(t)
 	h.press("j") // logo.png is binary and renders as no rows at all
 
+	// The press marked its own read in flight; without this loadDiff would
+	// decline to issue a second one.
+	clear(h.m.diffs)
 	cmd := h.m.loadDiff()
 	if cmd == nil {
 		t.Fatal("no diff was requested for the selected file")
@@ -248,7 +251,15 @@ func TestConcurrentLoadsShareOneHighlighter(t *testing.T) {
 	h := newHarness(t)
 	h.press("j") // main.go
 
-	cmds := []tea.Cmd{h.m.loadDiff(), h.m.loadDetailFor(headSHA(h)), h.m.loadDiff()}
+	// The presses left their reads in flight and unanswered, and a load for a
+	// key already in flight is declined; drop the markers so each spawns.
+	load := func(f func() tea.Cmd) tea.Cmd {
+		clear(h.m.diffs)
+		clear(h.m.details)
+		return f()
+	}
+	sha := headSHA(h)
+	cmds := []tea.Cmd{load(h.m.loadDiff), load(func() tea.Cmd { return h.m.loadDetailFor(sha) }), load(h.m.loadDiff)}
 	var wg sync.WaitGroup
 	for _, cmd := range cmds {
 		if cmd == nil {
@@ -362,7 +373,7 @@ func TestErrorIsShown(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a git error to render")
 	}
-	h.send(diffMsg{gen: h.m.diffGen, err: err})
+	h.send(diffMsg{epoch: h.m.diffEpoch, key: h.m.diffWant, err: err})
 	if body := h.m.Body(); !strings.Contains(body, "git error") {
 		t.Errorf("the error is not visible in the frame:\n%s", body)
 	}

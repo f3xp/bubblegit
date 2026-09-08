@@ -174,6 +174,15 @@ func (l *Log) Selected() (git.Commit, bool) {
 	return l.commits[l.cursor], true
 }
 
+// Near is the SHAs within k rows of the cursor, for reading ahead of it.
+func (l *Log) Near(k int) []string {
+	var out []string
+	for _, i := range l.near(k) {
+		out = append(out, l.commits[i].SHA)
+	}
+	return out
+}
+
 func (l *Log) SelectedSHA() string {
 	c, ok := l.Selected()
 	if !ok {

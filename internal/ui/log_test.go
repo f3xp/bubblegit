@@ -167,14 +167,16 @@ func TestLogSearchWalksMatches(t *testing.T) {
 	h.enterLog()
 	h.key("/")
 	h.typeText("FIXTURE") // every fixture commit is by "fixture"; case must not matter
-	h.run(h.enter())
+	// maybeRun throughout: a match whose detail is cached or already being
+	// read ahead of the cursor produces no command.
+	h.maybeRun(h.enter())
 	first := h.m.log.SelectedSHA()
-	h.run(h.key("n"))
+	h.maybeRun(h.key("n"))
 	second := h.m.log.SelectedSHA()
 	if first == second {
 		t.Fatal("n did not move to the next match")
 	}
-	h.run(h.key("N"))
+	h.maybeRun(h.key("N"))
 	if h.m.log.SelectedSHA() != first {
 		t.Error("N did not come back to the previous match")
 	}
@@ -188,17 +190,18 @@ func TestLogParentAndChildJump(t *testing.T) {
 	h.selectCommit("merge feature into main")
 	merge := h.m.log.SelectedSHA()
 
-	h.run(h.key("["))
+	// maybeRun: a neighbour's detail may already be cached from a prefetch.
+	h.maybeRun(h.key("["))
 	if c, _ := h.m.log.Selected(); c.Subject != "edit plain.txt" {
 		t.Fatalf("[ landed on %q, want the merge's first parent", c.Subject)
 	}
 	// The edit has two children, the feature commit and the merge; the
 	// nearest one above is the feature commit, and its own child is the merge.
-	h.run(h.key("]"))
+	h.maybeRun(h.key("]"))
 	if c, _ := h.m.log.Selected(); c.Subject != "add feature.txt" {
 		t.Fatalf("] landed on %q, want the nearest child above", c.Subject)
 	}
-	h.run(h.key("]"))
+	h.maybeRun(h.key("]"))
 	if h.m.log.SelectedSHA() != merge {
 		t.Error("a second ] did not reach the merge")
 	}
@@ -381,16 +384,15 @@ func TestCommitInvalidatesLog(t *testing.T) {
 }
 
 // TestStaleDetailIsDiscarded: holding j in the log list issues a read per
-// keystroke and they return out of order. Without the generation tag the pane
+// keystroke and they return out of order. Without matching on the SHA the pane
 // settles on whichever answer arrives last rather than on the commit under the
 // cursor.
 func TestStaleDetailIsDiscarded(t *testing.T) {
 	h := newHarness(t)
 	h.enterLog()
 
-	current := h.m.detailGen
 	h.send(detailMsg{
-		gen:     current - 1,
+		sha:     strings.Repeat("f", 40),
 		content: pane.RenderDetail(git.Detail{Commit: git.Commit{SHA: strings.Repeat("f", 40), Short: "fffffff"}}),
 	})
 	if got := h.m.detail.Title(); got == "fffffff" {

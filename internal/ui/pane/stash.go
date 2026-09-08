@@ -43,6 +43,15 @@ func (s *Stashes) Selected() (git.Stash, bool) {
 }
 
 // SelectedSHA is the object name under the cursor, or empty.
+// Near is the SHAs within k rows of the cursor, for reading ahead of it.
+func (s *Stashes) Near(k int) []string {
+	var out []string
+	for _, i := range s.near(k) {
+		out = append(out, s.stashes[i].SHA)
+	}
+	return out
+}
+
 func (s *Stashes) SelectedSHA() string {
 	st, ok := s.Selected()
 	if !ok {

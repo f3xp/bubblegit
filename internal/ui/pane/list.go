@@ -40,6 +40,21 @@ func (l *list) SelectRow(row int) {
 	l.MoveTo(l.offset + row)
 }
 
+// near is the rows within k of the cursor on either side, nearest first per
+// side, for reading ahead of the cursor.
+func (l *list) near(k int) []int {
+	var out []int
+	for d := 1; d <= k; d++ {
+		if i := l.cursor - d; i >= 0 {
+			out = append(out, i)
+		}
+		if i := l.cursor + d; i < l.n {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 func (l *list) Top()    { l.MoveTo(0) }
 func (l *list) Bottom() { l.MoveTo(l.n - 1) }
 

@@ -131,6 +131,21 @@ func (f *Files) SelectRow(row int) {
 	f.MoveTo(f.offset + row)
 }
 
+// Near is the up-to-k files on each side of the selection, in row order and
+// skipping headings, for reading their diffs ahead of the cursor.
+func (f *Files) Near(k int) []git.FileStatus {
+	var out []git.FileStatus
+	for _, dir := range []int{-1, 1} {
+		for i, n := f.cursor+dir, 0; i >= 0 && i < len(f.rows) && n < k; i += dir {
+			if r := f.rows[i]; r.file >= 0 {
+				out = append(out, f.files[r.file])
+				n++
+			}
+		}
+	}
+	return out
+}
+
 func (f *Files) Top()    { f.MoveTo(0) }
 func (f *Files) Bottom() { f.MoveTo(len(f.rows) - 1) }
 

@@ -61,6 +61,15 @@ func (b *Branches) Selected() (git.Branch, bool) {
 	return b.branches[b.cursor], true
 }
 
+// Near is the tip SHAs within k rows of the cursor, for reading ahead of it.
+func (b *Branches) Near(k int) []string {
+	var out []string
+	for _, i := range b.near(k) {
+		out = append(out, b.branches[i].SHA)
+	}
+	return out
+}
+
 func (b *Branches) SelectedName() string {
 	br, ok := b.Selected()
 	if !ok {

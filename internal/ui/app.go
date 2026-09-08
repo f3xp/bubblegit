@@ -120,9 +120,20 @@ type amendMsg struct {
 	err error
 }
 
-// diffMsg carries the generation of the request that produced it. Anything
-// older than the pane's current generation is a stale answer to a question
-// the user has already moved on from.
+// diffKey is the identity of one diff: which file, which side, and whether
+// the record is the untracked one. A path deleted from the index and still on
+// disk is two records under one path, and the tracked one's worktree side
+// would otherwise collide with the untracked one's.
+type diffKey struct {
+	path      string
+	staged    bool
+	untracked bool
+}
+
+// diffMsg carries the key of the diff it answers and the epoch it was read in.
+// A read from an earlier epoch saw a working tree that has since changed and
+// is dropped; a current one is cached whether or not the cursor is still on
+// it, and painted when it is.
 //
 // What it carries is the rendered diff rather than the parsed one. Rendering a
 // diff costs tens of microseconds a line — hundreds of milliseconds for a large
@@ -130,7 +141,8 @@ type amendMsg struct {
 // inside Update, where nothing else can happen. It is the second half of the
 // same read, so it belongs on the same goroutine.
 type diffMsg struct {
-	gen     uint64
+	epoch   uint64
+	key     diffKey
 	content pane.DiffContent
 	err     error
 }
@@ -165,11 +177,11 @@ type stashesMsg struct {
 	err     error
 }
 
-// detailMsg carries one commit's patch, rendered and generation-tagged for the
-// same reasons diffMsg is — and a commit carries every changed file's patch, so
-// there is more of it to render.
+// detailMsg carries one commit's patch, rendered for the same reasons diffMsg
+// is — and a commit carries every changed file's patch, so there is more of it
+// to render. It needs no epoch: a commit's patch never changes.
 type detailMsg struct {
-	gen     uint64
+	sha     string
 	content pane.DetailContent
 	err     error
 }
@@ -200,20 +212,26 @@ type Model struct {
 	focus focus
 	view  view
 
-	// diffGen is bumped on every diff request. A diffMsg whose gen is not the
-	// current one is discarded.
-	//
-	// Without this, holding j in the file list issues a diff request per
-	// keystroke and they return out of order, so the pane intermittently
-	// settles on the wrong file's diff. It is cheap here and miserable to
-	// retrofit once several panes load independently.
-	diffGen uint64
+	// diffWant is the diff the document pane is meant to show. Holding j in
+	// the file list issues a read per keystroke and they return out of order;
+	// an answer is painted only when it is for this key, so the pane settles
+	// on the file under the cursor rather than on whichever read finished
+	// last. detailWant is its counterpart for the commit pane.
+	diffWant   diffKey
+	detailWant string
 
-	// detailGen is diffGen's counterpart in the log view, and exists for the
-	// same reason: holding j in the log list issues a request per keystroke,
-	// and without a generation the pane settles on whichever answer happens to
-	// arrive last rather than on the commit under the cursor.
-	detailGen uint64
+	// diffs and details hold every rendered answer of the current epoch, keyed
+	// by identity, so moving back to an item — or on to one a prefetch already
+	// read — paints in the same Update with no "loading…" frame. A nil entry
+	// is a read in flight, which stops a second process being spawned for it.
+	diffs   map[diffKey]*pane.DiffContent
+	details map[string]*pane.DetailContent
+
+	// diffEpoch is bumped on every status read. A diffMsg from an earlier
+	// epoch was read from a working tree that has since changed and is
+	// dropped, so the cache can never outlive the state it was read from.
+	// Commits are immutable, so details has no epoch.
+	diffEpoch uint64
 
 	// logGen is bumped only when the log is reloaded from the top. A page that
 	// belongs to a superseded list would otherwise be appended to the new one.
@@ -296,7 +314,7 @@ type Model struct {
 	// pre-commit hook can take seconds, which is ample time to press the key
 	// again and spawn a second `git commit`.
 	//
-	// diffGen does not cover this: it discards stale answers, and the problem
+	// diffWant does not cover this: it discards stale answers, and the problem
 	// here is a stale question. Holding the stage key builds every patch from
 	// the diff on screen, but the first apply has already moved the index out
 	// from under the rest, so they fail one after another and a correct action
@@ -353,6 +371,9 @@ func New(root string) Model {
 		commit: pane.NewCommit(),
 		detail: pane.NewDetail(),
 		splits: splitDefaults,
+
+		diffs:   map[diffKey]*pane.DiffContent{},
+		details: map[string]*pane.DetailContent{},
 	}
 }
 
@@ -444,30 +465,76 @@ func (m Model) loadStatus() tea.Cmd {
 	}
 }
 
-// loadDiff requests the diff for the current selection, tagged with the
-// generation it belongs to.
+// prefetchDepth is how many neighbours on each side of the selection are
+// read ahead of the cursor. Two, not one: the near neighbour was read on the
+// previous move, so in steady state holding j still spawns one process per
+// keystroke — the far one — while the answer has twice the time to land.
+const prefetchDepth = 2
+
+// cacheCap bounds diffs and details. A rendered diff is a slice of styled
+// lines, and a hundred of them from a long log is real memory.
+// ponytail: reset the whole map when full. An LRU is the upgrade if the reset
+// ever shows as a "loading…" frame mid-scroll.
+const cacheCap = 64
+
+// loadDiff shows the diff for the current selection: from the cache when it
+// is there, otherwise blank until the read lands.
 func (m *Model) loadDiff() tea.Cmd {
 	sel, ok := m.files.Selected()
 	if !ok {
+		m.diffWant = diffKey{}
 		m.diff.SetEmpty("no file selected")
 		return nil
 	}
+	key := m.keyFor(sel)
+	m.diffWant = key
+	m.diff.SetLoading(sel.Path, key.staged)
+	if c := m.diffs[key]; c != nil {
+		m.diff.SetDiff(*c)
+		return nil
+	}
+	return m.fetchDiff(sel)
+}
 
-	m.diffGen++
-	gen := m.diffGen
-	repo := m.repo
+// keyFor is the identity of the diff the pane would show for f.
+func (m Model) keyFor(f git.FileStatus) diffKey {
+	return diffKey{path: f.Path, staged: m.sideFor(f), untracked: f.IsUntracked()}
+}
 
-	staged := m.stagedSide()
-	untracked := sel.IsUntracked()
-
-	m.diff.SetLoading(sel.Path, staged)
-
+// fetchDiff reads and renders one file's diff, unless it is cached or already
+// in flight.
+func (m *Model) fetchDiff(f git.FileStatus) tea.Cmd {
+	key := m.keyFor(f)
+	if _, seen := m.diffs[key]; seen {
+		return nil
+	}
+	m.diffs[key] = nil
+	epoch, repo := m.diffEpoch, m.repo
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
-		d, err := git.DiffFile(ctx, repo, sel.Path, staged, untracked)
-		return diffMsg{gen: gen, content: pane.RenderDiff(d), err: err}
+		d, err := git.DiffFile(ctx, repo, key.path, key.staged, key.untracked)
+		return diffMsg{epoch: epoch, key: key, content: pane.RenderDiff(d), err: err}
 	}
+}
+
+// prefetchDiffs reads the files around the selection, so that the next j or k
+// finds its diff already rendered.
+func (m *Model) prefetchDiffs() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, f := range m.files.Near(prefetchDepth) {
+		cmds = append(cmds, m.fetchDiff(f))
+	}
+	return tea.Batch(cmds...)
+}
+
+// prefetchDetails is prefetchDiffs for the commit pane.
+func (m *Model) prefetchDetails(shas []string) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, sha := range shas {
+		cmds = append(cmds, m.fetchDetail(sha))
+	}
+	return tea.Batch(cmds...)
 }
 
 // loadLog reads the first page, replacing whatever the pane holds.
@@ -560,6 +627,7 @@ func (m *Model) loadStashes() tea.Cmd {
 func (m *Model) loadStashTip() tea.Cmd {
 	st, ok := m.stashes.Selected()
 	if !ok {
+		m.detailWant = ""
 		m.detail.SetEmpty("no stashes")
 		return nil
 	}
@@ -570,6 +638,7 @@ func (m *Model) loadStashTip() tea.Cmd {
 func (m *Model) loadDetail() tea.Cmd {
 	c, ok := m.log.Selected()
 	if !ok {
+		m.detailWant = ""
 		m.detail.SetEmpty("no commit selected")
 		return nil
 	}
@@ -582,6 +651,7 @@ func (m *Model) loadDetail() tea.Cmd {
 func (m *Model) loadBranchTip() tea.Cmd {
 	b, ok := m.branches.Selected()
 	if !ok {
+		m.detailWant = ""
 		m.detail.SetEmpty("no branch selected")
 		return nil
 	}
@@ -589,15 +659,28 @@ func (m *Model) loadBranchTip() tea.Cmd {
 }
 
 func (m *Model) loadDetailFor(sha string) tea.Cmd {
-	m.detailGen++
-	gen, repo := m.detailGen, m.repo
+	m.detailWant = sha
 	m.detail.SetLoading(sha)
+	if c := m.details[sha]; c != nil {
+		m.detail.SetDetail(*c)
+		return nil
+	}
+	return m.fetchDetail(sha)
+}
 
+// fetchDetail reads and renders one commit, unless it is cached or already in
+// flight.
+func (m *Model) fetchDetail(sha string) tea.Cmd {
+	if _, seen := m.details[sha]; seen {
+		return nil
+	}
+	m.details[sha] = nil
+	repo := m.repo
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 		defer cancel()
 		d, err := git.Show(ctx, repo, sha)
-		return detailMsg{gen: gen, content: pane.RenderDetail(d), err: err}
+		return detailMsg{sha: sha, content: pane.RenderDetail(d), err: err}
 	}
 }
 
@@ -614,11 +697,14 @@ func (m *Model) loadDetailFor(sha string) tea.Cmd {
 // only thing the key can sensibly mean — whether the stage key stages or
 // un-stages.
 func (m Model) stagedSide() bool {
-	if m.showStaged {
-		return true
-	}
 	sel, ok := m.files.Selected()
-	return ok && sel.IsStaged() && !sel.IsUnstaged()
+	return ok && m.sideFor(sel)
+}
+
+// sideFor is stagedSide for any file, not only the selected one: a prefetch
+// has to read the side the pane would show.
+func (m Model) sideFor(f git.FileStatus) bool {
+	return m.showStaged || (f.IsStaged() && !f.IsUnstaged())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -654,6 +740,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.files.SetFiles(msg.files)
 		m.files.SetStats(msg.stats)
 		m.added, m.deleted = git.Total(msg.stats)
+		// Whatever changed the tree or the index landed here, so every cached
+		// diff is now a guess. No prefetch on this path: a tick must not
+		// spawn processes for files nobody has moved to.
+		m.diffEpoch++
+		clear(m.diffs)
 		return m, m.loadDiff()
 
 	case stagedMsg:
@@ -793,25 +884,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadStashTip()
 
 	case detailMsg:
-		if msg.gen != m.detailGen {
-			return m, nil
-		}
 		if msg.err != nil {
-			m.detail.SetError(msg.err)
+			// Dropped rather than cached, so the next select retries.
+			delete(m.details, msg.sha)
+			if msg.sha == m.detailWant {
+				m.detail.SetError(msg.err)
+			}
 			return m, nil
 		}
-		m.detail.SetDetail(msg.content)
+		if len(m.details) >= cacheCap {
+			clear(m.details)
+		}
+		m.details[msg.sha] = &msg.content
+		if msg.sha == m.detailWant {
+			m.detail.SetDetail(msg.content)
+		}
 
 	case diffMsg:
-		// Discard answers to superseded questions.
-		if msg.gen != m.diffGen {
+		// Read before the tree changed: an answer to a question that no
+		// longer has this answer.
+		if msg.epoch != m.diffEpoch {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.diff.SetError(msg.err)
+			delete(m.diffs, msg.key)
+			if msg.key == m.diffWant {
+				m.diff.SetError(msg.err)
+			}
 			return m, nil
 		}
-		m.diff.SetDiff(msg.content)
+		if len(m.diffs) >= cacheCap {
+			clear(m.diffs)
+		}
+		m.diffs[msg.key] = &msg.content
+		// Painted only when it is what the cursor is on: a prefetch, or a
+		// read the user has already scrolled past, is cached and nothing more.
+		if msg.key == m.diffWant {
+			m.diff.SetDiff(msg.content)
+		}
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -1141,7 +1251,7 @@ func (m *Model) afterLogMove(before string) tea.Cmd {
 	// Only when the selection actually moved: repeated j at the end of the
 	// list must not spawn a git process per keystroke.
 	if m.log.SelectedSHA() != before {
-		cmds = append(cmds, m.loadDetail())
+		cmds = append(cmds, m.loadDetail(), m.prefetchDetails(m.log.Near(prefetchDepth)))
 	}
 	return tea.Batch(cmds...)
 }
@@ -1338,7 +1448,7 @@ func (m *Model) afterStashMove(before string) tea.Cmd {
 	if m.stashes.SelectedSHA() == before {
 		return nil
 	}
-	return m.loadStashTip()
+	return tea.Batch(m.loadStashTip(), m.prefetchDetails(m.stashes.Near(prefetchDepth)))
 }
 
 // afterBranchMove issues the tip re-read a moved branch cursor implies. Shared
@@ -1349,7 +1459,7 @@ func (m *Model) afterBranchMove(before string) tea.Cmd {
 	if m.branches.SelectedName() == before {
 		return nil
 	}
-	return m.loadBranchTip()
+	return tea.Batch(m.loadBranchTip(), m.prefetchDetails(m.branches.Near(prefetchDepth)))
 }
 
 // handleCommitKey routes to the editor, letting only its own bindings through.
@@ -1493,7 +1603,7 @@ func (m *Model) afterFilesMove(before string) tea.Cmd {
 	if after, _ := m.files.Selected(); after.Path == before {
 		return nil
 	}
-	return m.loadDiff()
+	return tea.Batch(m.loadDiff(), m.prefetchDiffs())
 }
 
 func (m Model) handleDiffKey(k string) (tea.Model, tea.Cmd) {
