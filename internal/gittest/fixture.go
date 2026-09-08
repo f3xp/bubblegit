@@ -89,6 +89,10 @@ func cached(tb testing.TB, script string, args ...string) string {
 	if _, err := os.Stat(filepath.Join(dest, ".git", "HEAD")); err == nil {
 		return dest
 	}
+	// A hollowed-out fixture has to go before the rebuild is renamed over it:
+	// rename refuses a non-empty directory, and the tolerance below would then
+	// accept the husk because its .git is still there.
+	os.RemoveAll(dest)
 
 	scratch, err := os.MkdirTemp(os.TempDir(), "bubblegit-fixture-building-")
 	if err != nil {
